@@ -1,0 +1,10 @@
+# Cloudflare account
+CF_ACCOUNT_ID=your_account_id
+CF_API_TOKEN=your_api_token_with_realtime_admin
+
+# RealtimeKit app
+RTK_APP_ID=your_realtimekit_app_id
+
+# Ollama Cloud (wire later — not needed for Phases 0-4)
+OLLAMA_API_KEY=your_ollama_cloud_key
+OLLAMA_BASE_URL=https://your-ollama-cloud-endpoint
