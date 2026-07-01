@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { createRoom, joinRoom } from "../lib/api";
 
 export default function Home() {
@@ -49,6 +49,10 @@ export default function Home() {
 			<div className="home-card">
 				<h1>VE-Call</h1>
 				<p className="subtitle">Video conferencing with AI transcription</p>
+
+				<div className="dashboard-link-row">
+					<Link to="/dashboard" className="text-link">View past meetings →</Link>
+				</div>
 
 				<div className="form-group">
 					<label htmlFor="name">Your name</label>

@@ -4,6 +4,7 @@ interface Env {
 	RTK_APP_ID: string;
 	OLLAMA_API_KEY: string;
 	OLLAMA_BASE_URL: string;
+	OLLAMA_MODEL?: string;
 }
 
 const RTK_BASE = "https://api.cloudflare.com/client/v4/accounts";
@@ -90,7 +91,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, env }) => {
 					Authorization: `Bearer ${env.OLLAMA_API_KEY}`,
 				},
 				body: JSON.stringify({
-					model: "llama3.1",
+					model: env.OLLAMA_MODEL || "llama3.1:8b",
 					stream: false,
 					messages: [
 						{ role: "system", content: SUMMARY_SYSTEM_PROMPT },

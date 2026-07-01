@@ -235,3 +235,80 @@
 	color: #64748b;
 	font-size: 0.875rem;
 }
+
+.dashboard-link-row {
+	margin-bottom: 1.5rem;
+}
+
+.text-link {
+	color: #4f46e5;
+	font-size: 0.8125rem;
+	font-weight: 600;
+	text-decoration: none;
+}
+
+.text-link:hover {
+	text-decoration: underline;
+}
+
+.dashboard-page {
+	max-width: 900px;
+	margin: 0 auto;
+	padding: 2rem 1rem;
+}
+
+.dashboard-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	margin-bottom: 2rem;
+}
+
+.dashboard-header h1 {
+	font-size: 1.75rem;
+	font-weight: 700;
+}
+
+.dashboard-actions .btn-link {
+	width: auto;
+	padding: 0.5rem 1rem;
+}
+
+.dashboard-page h2 {
+	font-size: 1.125rem;
+	font-weight: 600;
+	margin-bottom: 1rem;
+}
+
+.meeting-list {
+	display: flex;
+	flex-direction: column;
+	gap: 0.75rem;
+}
+
+.meeting-item {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	background: white;
+	border: 1px solid #e2e8f0;
+	border-radius: 10px;
+	padding: 1rem 1.25rem;
+}
+
+.meeting-item-info h3 {
+	font-size: 0.9375rem;
+	font-weight: 600;
+	margin-bottom: 0.125rem;
+}
+
+.meeting-meta {
+	font-size: 0.75rem;
+	color: #94a3b8;
+}
+
+.meeting-item-actions .btn-link {
+	width: auto;
+	padding: 0.375rem 0.875rem;
+	font-size: 0.75rem;
+}
