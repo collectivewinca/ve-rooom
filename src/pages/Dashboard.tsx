@@ -14,17 +14,24 @@ export default function Dashboard() {
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState("");
 
+	console.log("[Dashboard] Render — loading:", loading, "meetings count:", meetings.length);
+
 	useEffect(() => {
+		console.log("[Dashboard] Fetching /api/meetings");
 		fetch("/api/meetings")
 			.then((res) => {
+				console.log("[Dashboard] Response status:", res.status);
 				if (!res.ok) throw new Error("Failed to fetch meetings");
 				return res.json();
 			})
 			.then((data) => {
-				setMeetings((data as { meetings: Meeting[] }).meetings || []);
+				const meetings = (data as { meetings: Meeting[] }).meetings || [];
+				console.log("[Dashboard] Meetings received:", meetings.length, meetings.map((m) => ({ id: m.id, title: m.title, status: m.status })));
+				setMeetings(meetings);
 				setLoading(false);
 			})
 			.catch((e) => {
+				console.log("[Dashboard] Error:", e);
 				setError(e instanceof Error ? e.message : "Failed to load meetings");
 				setLoading(false);
 			});

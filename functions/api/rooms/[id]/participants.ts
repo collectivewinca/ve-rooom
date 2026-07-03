@@ -8,18 +8,24 @@ const RTK_BASE = "https://api.cloudflare.com/client/v4/accounts";
 
 export const onRequestPost: PagesFunction<Env> = async ({ params, request, env }) => {
 	const roomId = params.id as string;
+	console.log("[participants.ts] POST /api/rooms/:id/participants — start, roomId:", roomId);
 
 	let body: { name?: string };
 	try {
 		body = await request.json();
+		console.log("[participants.ts] Request body:", body);
 	} catch {
+		console.log("[participants.ts] Invalid JSON body");
 		return jsonResponse(400, { error: "Invalid JSON body" });
 	}
 
 	const name = body.name?.trim();
 	if (!name) {
+		console.log("[participants.ts] Missing name");
 		return jsonResponse(400, { error: "name is required" });
 	}
+
+	console.log("[participants.ts] Adding participant:", name, "to room:", roomId);
 
 	const res = await fetch(
 		`${RTK_BASE}/${env.CF_ACCOUNT_ID}/realtime/kit/${env.RTK_APP_ID}/meetings/${roomId}/participants`,
@@ -33,8 +39,11 @@ export const onRequestPost: PagesFunction<Env> = async ({ params, request, env }
 		}
 	);
 
+	console.log("[participants.ts] Add participant response status:", res.status);
+
 	if (!res.ok) {
 		const errText = await res.text();
+		console.log("[participants.ts] Add participant failed:", errText);
 		return jsonResponse(res.status, { error: "Failed to join room", detail: errText });
 	}
 
@@ -42,6 +51,9 @@ export const onRequestPost: PagesFunction<Env> = async ({ params, request, env }
 		success: boolean;
 		data: { token: string };
 	};
+
+	console.log("[participants.ts] Participant added, token received (truncated):", json.data.token?.slice(0, 30) + "...");
+	console.log("[participants.ts] Done — returning authToken");
 
 	return jsonResponse(200, { authToken: json.data.token });
 };

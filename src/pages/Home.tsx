@@ -1,26 +1,40 @@
-import { useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useState, useEffect } from "react";
+import { useNavigate, Link, useSearchParams } from "react-router-dom";
 import { createRoom, joinRoom } from "../lib/api";
 
 export default function Home() {
 	const navigate = useNavigate();
+	const [searchParams] = useSearchParams();
 	const [name, setName] = useState("");
 	const [roomTitle, setRoomTitle] = useState("");
 	const [joinRoomId, setJoinRoomId] = useState("");
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState("");
 
+	useEffect(() => {
+		const roomFromUrl = searchParams.get("room");
+		if (roomFromUrl) {
+			console.log("[Home] Auto-filled room ID from URL:", roomFromUrl);
+			setJoinRoomId(roomFromUrl);
+		}
+	}, [searchParams]);
+
 	async function handleCreate() {
+		console.log("[Home] handleCreate — name:", name, "roomTitle:", roomTitle);
 		if (!name.trim()) {
+			console.log("[Home] No name entered");
 			setError("Please enter your name");
 			return;
 		}
 		setLoading(true);
 		setError("");
 		try {
+			console.log("[Home] Calling createRoom...");
 			const { roomId, authToken } = await createRoom(name.trim(), roomTitle.trim() || undefined);
+			console.log("[Home] Room created, navigating to meeting:", roomId);
 			navigate(`/meeting/${roomId}?authToken=${encodeURIComponent(authToken)}`);
 		} catch (e) {
+			console.log("[Home] createRoom error:", e);
 			setError(e instanceof Error ? e.message : "Failed to create room");
 		} finally {
 			setLoading(false);
@@ -28,16 +42,21 @@ export default function Home() {
 	}
 
 	async function handleJoin() {
+		console.log("[Home] handleJoin — name:", name, "joinRoomId:", joinRoomId);
 		if (!name.trim() || !joinRoomId.trim()) {
+			console.log("[Home] Missing name or room ID");
 			setError("Please enter your name and room ID");
 			return;
 		}
 		setLoading(true);
 		setError("");
 		try {
+			console.log("[Home] Calling joinRoom...");
 			const { authToken } = await joinRoom(joinRoomId.trim(), name.trim());
+			console.log("[Home] Joined room, navigating to meeting:", joinRoomId.trim());
 			navigate(`/meeting/${joinRoomId.trim()}?authToken=${encodeURIComponent(authToken)}`);
 		} catch (e) {
+			console.log("[Home] joinRoom error:", e);
 			setError(e instanceof Error ? e.message : "Failed to join room");
 		} finally {
 			setLoading(false);

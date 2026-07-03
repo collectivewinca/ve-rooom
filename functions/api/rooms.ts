@@ -7,19 +7,25 @@ interface Env {
 const RTK_BASE = "https://api.cloudflare.com/client/v4/accounts";
 
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
+	console.log("[rooms.ts] POST /api/rooms — start");
+
 	if (!env.CF_ACCOUNT_ID || !env.CF_API_TOKEN || !env.RTK_APP_ID) {
+		console.log("[rooms.ts] Missing config:", { hasAccountId: !!env.CF_ACCOUNT_ID, hasApiToken: !!env.CF_API_TOKEN, hasAppId: !!env.RTK_APP_ID });
 		return jsonResponse(500, { error: "Server missing configuration. Set CF_ACCOUNT_ID, CF_API_TOKEN, RTK_APP_ID in .dev.vars" });
 	}
 
 	let body: { name?: string; roomTitle?: string };
 	try {
 		body = await request.json();
+		console.log("[rooms.ts] Request body:", body);
 	} catch {
+		console.log("[rooms.ts] Invalid JSON body");
 		return jsonResponse(400, { error: "Invalid JSON body" });
 	}
 
 	const name = body.name?.trim();
 	if (!name) {
+		console.log("[rooms.ts] Missing name");
 		return jsonResponse(400, { error: "name is required" });
 	}
 
@@ -47,13 +53,18 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 		},
 	};
 
+	console.log("[rooms.ts] Creating meeting with title:", meetingBody.title);
+
 	const meetingRes = await fetch(
 		`${RTK_BASE}/${env.CF_ACCOUNT_ID}/realtime/kit/${env.RTK_APP_ID}/meetings`,
 		{ method: "POST", headers: authHeaders, body: JSON.stringify(meetingBody) }
 	);
 
+	console.log("[rooms.ts] Create meeting response status:", meetingRes.status);
+
 	if (!meetingRes.ok) {
 		const errText = await meetingRes.text();
+		console.log("[rooms.ts] Create meeting failed:", errText);
 		return jsonResponse(meetingRes.status, { error: "Failed to create meeting", detail: errText });
 	}
 
@@ -62,6 +73,9 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 		data: { id: string };
 	};
 	const meetingId = meetingJson.data.id;
+	console.log("[rooms.ts] Meeting created, id:", meetingId);
+
+	console.log("[rooms.ts] Adding participant:", name, "to meeting:", meetingId);
 
 	const participantRes = await fetch(
 		`${RTK_BASE}/${env.CF_ACCOUNT_ID}/realtime/kit/${env.RTK_APP_ID}/meetings/${meetingId}/participants`,
@@ -72,8 +86,11 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 		}
 	);
 
+	console.log("[rooms.ts] Add participant response status:", participantRes.status);
+
 	if (!participantRes.ok) {
 		const errText = await participantRes.text();
+		console.log("[rooms.ts] Add participant failed:", errText);
 		return jsonResponse(participantRes.status, { error: "Failed to add participant", detail: errText });
 	}
 
@@ -81,6 +98,9 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 		success: boolean;
 		data: { token: string };
 	};
+
+	console.log("[rooms.ts] Participant added, token received (truncated):", participantJson.data.token?.slice(0, 30) + "...");
+	console.log("[rooms.ts] Done — returning roomId + authToken");
 
 	return jsonResponse(200, {
 		roomId: meetingId,
