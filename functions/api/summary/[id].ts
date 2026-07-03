@@ -127,7 +127,9 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, env }) => {
 
 	// If transcript is empty (no speech detected), return early
 	const trimmedTranscript = transcriptText.trim();
-	if (trimmedTranscript.length === 0 || trimmedTranscript.length < 20) {
+	const transcriptLines = trimmedTranscript.split("\n").filter((l) => l.trim());
+	// First line is CSV header; skip AI if no actual data rows
+	if (transcriptLines.length <= 1) {
 		console.log("[summary.ts] Transcript is empty or too short — no speech detected in meeting");
 		return jsonResponse(200, {
 			status: "ok",
