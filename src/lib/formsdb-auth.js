@@ -135,7 +135,7 @@ class FormsDBAuth {
       meta: data.meta || {},
       email: data.record.email,
       name: data.record.name || data.record.username || data.record.email,
-      avatarURL: data.record.avatarURL || data.meta?.avatarURL || "",
+      avatarURL: data.record.avatarURL || data.meta?.rawUser?.picture || data.meta?.avatarURL || data.record.avatar || "",
       id: data.record.id,
       googleProfile: data.meta?.rawUser || data.meta || null,
     };

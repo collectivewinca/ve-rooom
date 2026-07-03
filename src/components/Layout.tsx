@@ -29,7 +29,11 @@ export default function Layout({ children }: { children: ReactNode }) {
 						<div className="navbar-avatar-placeholder" />
 					) : user ? (
 						<div className="navbar-user">
-							<img src={user.avatarURL} alt={user.name} className="navbar-avatar" />
+							{user.avatarURL ? (
+								<img src={user.avatarURL} alt={user.name} className="navbar-avatar" referrerPolicy="no-referrer" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+							) : (
+								<div className="navbar-avatar-placeholder" />
+							)}
 							<span className="navbar-user-name">{user.name}</span>
 							<button className="btn-sign-out" onClick={signOut} title="Sign out">
 								<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
