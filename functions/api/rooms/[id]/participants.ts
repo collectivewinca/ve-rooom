@@ -1,7 +1,12 @@
+import { verifyAuthToken } from "../../../auth";
+
 interface Env {
 	CF_ACCOUNT_ID: string;
 	CF_API_TOKEN: string;
 	RTK_APP_ID: string;
+	OLLAMA_API_KEY: string;
+	OLLAMA_BASE_URL: string;
+	FORMSDB_URL?: string;
 }
 
 const RTK_BASE = "https://api.cloudflare.com/client/v4/accounts";
@@ -10,7 +15,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ params, request, env }
 	const roomId = params.id as string;
 	console.log("[participants.ts] POST /api/rooms/:id/participants — start, roomId:", roomId);
 
-	let body: { name?: string };
+	let body: { name?: string; authToken?: string };
 	try {
 		body = await request.json();
 		console.log("[participants.ts] Request body:", body);
@@ -19,7 +24,13 @@ export const onRequestPost: PagesFunction<Env> = async ({ params, request, env }
 		return jsonResponse(400, { error: "Invalid JSON body" });
 	}
 
-	const name = body.name?.trim();
+	const user = await verifyAuthToken(body.authToken, env);
+	if (!user) {
+		console.log("[participants.ts] Auth verification failed");
+		return jsonResponse(401, { error: "Authentication required. Please sign in with Google." });
+	}
+
+	const name = body.name?.trim() || user.name;
 	if (!name) {
 		console.log("[participants.ts] Missing name");
 		return jsonResponse(400, { error: "name is required" });

@@ -70,15 +70,18 @@ export default function Layout({ children }: { children: ReactNode }) {
 			</nav>
 
 			{menuOpen && (
-				<div className="navbar-mobile-menu" onClick={() => setMenuOpen(false)}>
-					<Link to="/" className={`navbar-mobile-link ${location.pathname === "/" ? "active" : ""}`}>Home</Link>
-					<Link to="/dashboard" className={`navbar-mobile-link ${location.pathname === "/dashboard" ? "active" : ""}`}>Dashboard</Link>
-					{user ? (
-						<button className="navbar-mobile-link" onClick={() => { signOut(); setMenuOpen(false); }}>Sign out</button>
-					) : (
-						<button className="navbar-mobile-link" onClick={() => { signInWithGoogle(); setMenuOpen(false); }}>Sign in with Google</button>
-					)}
-				</div>
+				<>
+					<div className="navbar-mobile-overlay" onClick={() => setMenuOpen(false)} />
+					<div className="navbar-mobile-menu" onClick={() => setMenuOpen(false)}>
+						<Link to="/" className={`navbar-mobile-link ${location.pathname === "/" ? "active" : ""}`}>Home</Link>
+						<Link to="/dashboard" className={`navbar-mobile-link ${location.pathname === "/dashboard" ? "active" : ""}`}>Dashboard</Link>
+						{user ? (
+							<button className="navbar-mobile-link" onClick={() => { signOut(); setMenuOpen(false); }}>Sign out</button>
+						) : (
+							<button className="navbar-mobile-link" onClick={() => { signInWithGoogle(); setMenuOpen(false); }}>Sign in with Google</button>
+						)}
+					</div>
+				</>
 			)}
 
 			<div className="page-content">{children}</div>

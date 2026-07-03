@@ -925,14 +925,16 @@
 	display: none;
 	flex-direction: column;
 	justify-content: center;
+	align-items: center;
 	gap: 4px;
-	width: 36px;
-	height: 36px;
+	width: 40px;
+	height: 40px;
 	padding: 8px;
-	background: transparent;
+	background: rgba(255, 255, 255, 0.04);
 	border: 1px solid var(--color-border);
 	border-radius: var(--radius-sm);
 	cursor: pointer;
+	flex-shrink: 0;
 }
 
 .navbar-menu-toggle span {
@@ -954,6 +956,21 @@
 	transform: translateY(-6px) rotate(-45deg);
 }
 
+.navbar-mobile-overlay {
+	position: fixed;
+	inset: 0;
+	z-index: 998;
+	background: rgba(0, 0, 0, 0.5);
+	backdrop-filter: blur(4px);
+	-webkit-backdrop-filter: blur(4px);
+	animation: fadeIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+	from { opacity: 0; }
+	to { opacity: 1; }
+}
+
 .navbar-mobile-menu {
 	position: fixed;
 	top: 57px;
@@ -967,6 +984,18 @@
 	display: flex;
 	flex-direction: column;
 	padding: 0.5rem;
+	animation: slideDown 0.2s ease;
+}
+
+@keyframes slideDown {
+	from {
+		opacity: 0;
+		transform: translateY(-8px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
 }
 
 .navbar-mobile-link {
@@ -983,6 +1012,7 @@
 	cursor: pointer;
 	text-decoration: none;
 	text-align: left;
+	width: 100%;
 }
 
 .navbar-mobile-link:hover,
@@ -992,10 +1022,27 @@
 }
 
 /* ============================================
-   Responsive — Tablet (768px)
+   Responsive — Tablet (820px)
    ============================================ */
 
-@media (max-width: 768px) {
+@media (max-width: 820px) {
+	.navbar {
+		padding: 0.625rem 1rem;
+	}
+
+	.navbar-logo {
+		width: 28px;
+		height: 28px;
+	}
+
+	.navbar-links {
+		display: none;
+	}
+
+	.navbar-menu-toggle {
+		display: flex;
+	}
+
 	.home-hero h1 {
 		font-size: 2rem;
 	}
@@ -1032,17 +1079,8 @@
    ============================================ */
 
 @media (max-width: 640px) {
-	/* Navbar */
-	.navbar {
-		padding: 0.625rem 1rem;
-	}
-
-	.navbar-links {
-		display: none;
-	}
-
-	.navbar-menu-toggle {
-		display: flex;
+	.navbar-brand-text {
+		font-size: 0.875rem;
 	}
 
 	/* Home */
@@ -1279,7 +1317,12 @@
 
 @media (max-width: 380px) {
 	.navbar-brand-text {
-		font-size: 0.875rem;
+		display: none;
+	}
+
+	.navbar-logo {
+		width: 28px;
+		height: 28px;
 	}
 
 	.home-hero h1 {
@@ -1312,6 +1355,12 @@
 		padding-left: max(1rem, env(safe-area-inset-left));
 		padding-right: max(1rem, env(safe-area-inset-right));
 		padding-top: max(0.625rem, env(safe-area-inset-top));
+	}
+
+	.navbar-mobile-menu {
+		padding-left: max(0.5rem, env(safe-area-inset-left));
+		padding-right: max(0.5rem, env(safe-area-inset-right));
+		padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
 	}
 
 	.meeting-overlay-controls {

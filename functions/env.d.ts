@@ -4,4 +4,5 @@ interface Env {
 	RTK_APP_ID: string;
 	OLLAMA_API_KEY: string;
 	OLLAMA_BASE_URL: string;
+	FORMSDB_URL?: string;
 }

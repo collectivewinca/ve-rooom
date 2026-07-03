@@ -17,12 +17,26 @@ export interface SummaryResponse {
 	error?: string;
 }
 
+function getAuthToken(): string | null {
+	try {
+		const raw = localStorage.getItem("formsdb_auth_session");
+		if (!raw) return null;
+		const session = JSON.parse(raw);
+		return session?.token || null;
+	} catch {
+		return null;
+	}
+}
+
 export async function createRoom(name: string, roomTitle?: string): Promise<CreateRoomResponse> {
 	console.log("[api.ts] createRoom — name:", name, "roomTitle:", roomTitle || "(none)");
+	const authToken = getAuthToken();
+	if (!authToken) throw new Error("You must be signed in to create a meeting");
+
 	const res = await fetch("/api/rooms", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ name, roomTitle }),
+		body: JSON.stringify({ name, roomTitle, authToken }),
 	});
 	console.log("[api.ts] createRoom response status:", res.status);
 	if (!res.ok) {
@@ -38,10 +52,13 @@ export async function createRoom(name: string, roomTitle?: string): Promise<Crea
 export async function joinRoom(roomId: string, name: string): Promise<JoinRoomResponse> {
 	roomId = roomId.trim().replace(/\/+$/, "");
 	console.log("[api.ts] joinRoom — roomId:", roomId, "name:", name);
+	const authToken = getAuthToken();
+	if (!authToken) throw new Error("You must be signed in to join a meeting");
+
 	const res = await fetch(`/api/rooms/${roomId}/participants`, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ name }),
+		body: JSON.stringify({ name, authToken }),
 	});
 	console.log("[api.ts] joinRoom response status:", res.status);
 	if (!res.ok) {
