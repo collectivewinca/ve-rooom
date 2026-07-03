@@ -1,10 +1,12 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { createRoom, joinRoom } from "../lib/api";
+import { useAuth } from "../lib/useAuth";
 
 export default function Home() {
 	const navigate = useNavigate();
 	const [searchParams] = useSearchParams();
+	const { user } = useAuth();
 	const [name, setName] = useState("");
 	const [roomTitle, setRoomTitle] = useState("");
 	const [joinRoomId, setJoinRoomId] = useState("");
@@ -20,6 +22,13 @@ export default function Home() {
 			setMode("join");
 		}
 	}, [searchParams]);
+
+	useEffect(() => {
+		if (user?.name && !name) {
+			console.log("[Home] Pre-filled name from auth:", user.name);
+			setName(user.name);
+		}
+	}, [user, name]);
 
 	async function handleCreate() {
 		console.log("[Home] handleCreate — name:", name, "roomTitle:", roomTitle);

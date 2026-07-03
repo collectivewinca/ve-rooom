@@ -23,3 +23,35 @@ Your worker has access to the following bindings:
   - OLLAMA_MODEL: "(hidden)"
 ⎔ Starting local server...
 [wrangler:inf] Ready on http://127.0.0.1:8787
+[wrangler:inf] GET /dashboard 304 Not Modified (61ms)
+[wrangler:inf] GET /assets/index-B-5HJPyn.css 304 Not Modified (193ms)
+[wrangler:inf] GET /assets/index-Ck_yH9l_.js 304 Not Modified (158ms)
+[meetings.ts] GET /api/meetings — start
+[meetings.ts] Fetching meetings from RealtimeKit
+[wrangler:inf] GET /favicon.svg 200 OK (204ms)
+[wrangler:inf] GET /favicon.svg 304 Not Modified (29ms)
+[meetings.ts] Response status: 200
+[meetings.ts] Meetings found: 8
+[wrangler:inf] GET /api/meetings 200 OK (2623ms)
+wrangler.toml changed...
+Using vars defined in .dev.vars
+Your worker has access to the following bindings:
+- Vars:
+  - CF_ACCOUNT_ID: "(hidden)"
+  - CF_API_TOKEN: "(hidden)"
+  - RTK_APP_ID: "(hidden)"
+  - OLLAMA_API_KEY: "(hidden)"
+  - OLLAMA_BASE_URL: "(hidden)"
+  - OLLAMA_MODEL: "(hidden)"
+⎔ Reloading local server...
+wrangler.toml changed...
+Using vars defined in .dev.vars
+Your worker has access to the following bindings:
+- Vars:
+  - CF_ACCOUNT_ID: "(hidden)"
+  - CF_API_TOKEN: "(hidden)"
+  - RTK_APP_ID: "(hidden)"
+  - OLLAMA_API_KEY: "(hidden)"
+  - OLLAMA_BASE_URL: "(hidden)"
+  - OLLAMA_MODEL: "(hidden)"
+⎔ Reloading local server...
