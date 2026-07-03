@@ -29,7 +29,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ params, request, env }
 				Authorization: `Bearer ${env.CF_API_TOKEN}`,
 				"Content-Type": "application/json",
 			},
-			body: JSON.stringify({ name, preset_name: "group-call-host" }),
+			body: JSON.stringify({ name, preset_name: "group_call_host", custom_participant_id: crypto.randomUUID() }),
 		}
 	);
 

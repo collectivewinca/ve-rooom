@@ -68,7 +68,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 		{
 			method: "POST",
 			headers: authHeaders,
-			body: JSON.stringify({ name, preset_name: "group-call-host" }),
+			body: JSON.stringify({ name, preset_name: "group_call_host", custom_participant_id: crypto.randomUUID() }),
 		}
 	);
 
