@@ -23,4 +23,3 @@ Your worker has access to the following bindings:
   - OLLAMA_MODEL: "(hidden)"
 ⎔ Starting local server...
 [wrangler:inf] Ready on http://127.0.0.1:8787
-[wrangler:inf] GET / 200 OK (83ms)

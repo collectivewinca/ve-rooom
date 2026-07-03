@@ -75,7 +75,7 @@ export default function Home() {
 				</div>
 
 				<div className="home-card">
-					<div style={{ display: "flex", gap: "4px", marginBottom: "1.5rem", background: "rgba(15, 10, 30, 0.6)", borderRadius: "var(--radius-md)", padding: "4px" }}>
+					<div style={{ display: "flex", gap: "4px", marginBottom: "1.5rem", background: "rgba(15, 12, 8, 0.6)", borderRadius: "var(--radius-md)", padding: "4px" }}>
 						<button
 							onClick={() => { setMode("create"); setError(""); }}
 							style={{
@@ -85,7 +85,7 @@ export default function Home() {
 								fontSize: "0.8125rem",
 								fontWeight: 700,
 								background: mode === "create" ? "var(--gradient-primary)" : "transparent",
-								color: mode === "create" ? "white" : "var(--color-text-muted)",
+								color: mode === "create" ? "#1a1208" : "var(--color-text-muted)",
 								transition: "all var(--transition)",
 								border: "none",
 								cursor: "pointer",
@@ -102,7 +102,7 @@ export default function Home() {
 								fontSize: "0.8125rem",
 								fontWeight: 700,
 								background: mode === "join" ? "var(--gradient-primary)" : "transparent",
-								color: mode === "join" ? "white" : "var(--color-text-muted)",
+								color: mode === "join" ? "#1a1208" : "var(--color-text-muted)",
 								transition: "all var(--transition)",
 								border: "none",
 								cursor: "pointer",
