@@ -1,4 +1,4 @@
-import { type ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useAuth } from "../lib/useAuth";
 
@@ -6,6 +6,7 @@ export default function Layout({ children }: { children: ReactNode }) {
 	const location = useLocation();
 	const isMeeting = location.pathname.startsWith("/meeting/");
 	const { user, loading, signInWithGoogle, signOut } = useAuth();
+	const [menuOpen, setMenuOpen] = useState(false);
 
 	if (isMeeting) {
 		return <>{children}</>;
@@ -14,10 +15,11 @@ export default function Layout({ children }: { children: ReactNode }) {
 	return (
 		<div className="page-wrapper">
 			<nav className="navbar">
-				<Link to="/" className="navbar-brand">
+				<Link to="/" className="navbar-brand" onClick={() => setMenuOpen(false)}>
 					<img src="/favicon.svg" alt="VE Rooom" className="navbar-logo" />
 					<span className="navbar-brand-text">VE Rooom</span>
 				</Link>
+
 				<div className="navbar-links">
 					<Link to="/" className={`navbar-link ${location.pathname === "/" ? "active" : ""}`}>
 						Home
@@ -51,11 +53,34 @@ export default function Layout({ children }: { children: ReactNode }) {
 								<path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
 								<path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
 							</svg>
-							Sign in
+							<span className="signin-text">Sign in</span>
 						</button>
 					)}
 				</div>
+
+				<button
+					className={`navbar-menu-toggle ${menuOpen ? "open" : ""}`}
+					onClick={() => setMenuOpen(!menuOpen)}
+					aria-label="Toggle menu"
+				>
+					<span></span>
+					<span></span>
+					<span></span>
+				</button>
 			</nav>
+
+			{menuOpen && (
+				<div className="navbar-mobile-menu" onClick={() => setMenuOpen(false)}>
+					<Link to="/" className={`navbar-mobile-link ${location.pathname === "/" ? "active" : ""}`}>Home</Link>
+					<Link to="/dashboard" className={`navbar-mobile-link ${location.pathname === "/dashboard" ? "active" : ""}`}>Dashboard</Link>
+					{user ? (
+						<button className="navbar-mobile-link" onClick={() => { signOut(); setMenuOpen(false); }}>Sign out</button>
+					) : (
+						<button className="navbar-mobile-link" onClick={() => { signInWithGoogle(); setMenuOpen(false); }}>Sign in with Google</button>
+					)}
+				</div>
+			)}
+
 			<div className="page-content">{children}</div>
 		</div>
 	);

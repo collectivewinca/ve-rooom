@@ -36,6 +36,7 @@ export async function createRoom(name: string, roomTitle?: string): Promise<Crea
 }
 
 export async function joinRoom(roomId: string, name: string): Promise<JoinRoomResponse> {
+	roomId = roomId.trim().replace(/\/+$/, "");
 	console.log("[api.ts] joinRoom — roomId:", roomId, "name:", name);
 	const res = await fetch(`/api/rooms/${roomId}/participants`, {
 		method: "POST",
