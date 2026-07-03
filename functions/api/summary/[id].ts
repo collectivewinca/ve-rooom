@@ -87,6 +87,23 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, env }) => {
 		return jsonResponse(200, { status: "no_ended_session" });
 	}
 
+	// 1.5. Check session details for recording status
+	console.log("[summary.ts] Step 1.5: Fetching session details for:", session.id);
+	try {
+		const sessionDetailRes = await fetch(
+			`${RTK_BASE}/${env.CF_ACCOUNT_ID}/realtime/kit/${env.RTK_APP_ID}/sessions/${session.id}`,
+			{ headers: authHeaders }
+		);
+		if (sessionDetailRes.ok) {
+			const sessionDetail = await sessionDetailRes.json() as Record<string, unknown>;
+			console.log("[summary.ts] Session details:", JSON.stringify(sessionDetail));
+		} else {
+			console.log("[summary.ts] Session details fetch failed:", sessionDetailRes.status);
+		}
+	} catch (e) {
+		console.log("[summary.ts] Session details fetch error:", e);
+	}
+
 	// 2. Fetch transcript URL
 	console.log("[summary.ts] Step 2: Fetching transcript for session:", session.id);
 	const transcriptRes = await fetch(

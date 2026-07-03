@@ -73,7 +73,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 		data: { id: string };
 	};
 	const meetingId = meetingJson.data.id;
-	console.log("[rooms.ts] Meeting created, id:", meetingId);
+	console.log("[rooms.ts] Meeting created, id:", meetingId, "full response:", JSON.stringify(meetingJson));
 
 	console.log("[rooms.ts] Adding participant:", name, "to meeting:", meetingId);
 
