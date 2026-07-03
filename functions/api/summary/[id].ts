@@ -9,18 +9,40 @@ interface Env {
 
 const RTK_BASE = "https://api.cloudflare.com/client/v4/accounts";
 
-const SUMMARY_SYSTEM_PROMPT = `You are a meeting assistant. Given a meeting transcript, produce a well-structured Markdown summary with these sections:
+const SUMMARY_SYSTEM_PROMPT = `You are an expert meeting analyst and executive assistant. Your job is to analyze a meeting transcript and produce a comprehensive, well-structured Markdown summary.
 
-## Summary
-A concise paragraph (3-5 sentences) capturing what the meeting was about.
+Here is the format you MUST follow:
 
-## Key Decisions
-Bullet list of decisions made.
+## Meeting Summary
+Write a detailed overview paragraph (4-8 sentences) explaining what the meeting was about, its purpose, the overall tone, and the main themes discussed. Include who was present if identifiable from the transcript.
+
+## Key Topics Discussed
+List every distinct topic that was discussed during the meeting. For each topic, write 2-4 sentences explaining what was said about it. Use bullet points. Be specific — reference actual points, numbers, or details mentioned.
+
+## Decisions Made
+List every decision that was reached during the meeting. Each decision should be a bullet point with the decision in **bold** followed by a brief explanation of the rationale. If no formal decisions were made, note that.
 
 ## Action Items
-A checklist with the owner's name in **bold** and a brief task description. If no owner is identifiable, use "Unassigned".
+Extract every action item, task, or follow-up mentioned. Format as a checklist:
+- [ ] **Owner Name** — Task description (deadline if mentioned)
+- [ ] **Owner Name** — Task description (deadline if mentioned)
+If an owner is not identifiable, use **Unassigned**. Include any deadlines or timelines mentioned.
 
-Keep it clear, professional, and skimmable. Do not invent information not in the transcript.`;
+## Open Questions
+List any questions that were raised but not resolved during the meeting. Format as bullet points. If none, note "No open questions."
+
+## Participants
+List the participants who spoke during the meeting (identifiable from the transcript). If you can tell from the transcript, note who seemed to be leading the meeting.
+
+## Sentiment & Engagement
+Provide a brief assessment (2-3 sentences) of the meeting's energy, engagement level, and any notable dynamics (e.g., disagreements, enthusiasm, confusion, urgency).
+
+Rules:
+- Be thorough and detailed — this summary should be useful for someone who did NOT attend the meeting.
+- Use the actual words and names from the transcript. Do NOT invent information.
+- If the transcript is unclear or fragmented, do your best and note any gaps.
+- Keep it professional, clear, and skimmable with proper Markdown formatting.
+- Use timestamps from the transcript to reference when key moments occurred, if available.`;
 
 export const onRequestGet: PagesFunction<Env> = async ({ params, env }) => {
 	const meetingId = params.id as string;
@@ -103,13 +125,13 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, env }) => {
 	console.log("[summary.ts] Transcript text length:", transcriptText.length, "chars");
 	console.log("[summary.ts] Transcript preview (first 200 chars):", transcriptText.slice(0, 200));
 
-	// If transcript is empty (no speech detected), return early — no point polling forever
+	// If transcript is empty (no speech detected), return early
 	const trimmedTranscript = transcriptText.trim();
 	if (trimmedTranscript.length === 0 || trimmedTranscript.length < 20) {
 		console.log("[summary.ts] Transcript is empty or too short — no speech detected in meeting");
 		return jsonResponse(200, {
 			status: "ok",
-			summary: "## Summary\n\nNo speech was detected in this meeting. The transcript is empty, so no summary could be generated.\n\n## Key Decisions\n\n- None (no conversation recorded)\n\n## Action Items\n\n- [ ] **N/A** — No action items (no speech detected)",
+			summary: "## Meeting Summary\n\nNo speech was detected in this meeting. The transcript is empty, so no summary could be generated.\n\n## Key Topics Discussed\n\n- No topics were discussed (no speech detected in the recording)\n\n## Decisions Made\n\n- No decisions were made (no conversation recorded)\n\n## Action Items\n\n- [ ] **N/A** — No action items (no speech detected)\n\n## Open Questions\n\n- No open questions\n\n## Participants\n\n- No participants spoke during this meeting\n\n## Sentiment & Engagement\n\nNo assessment available — no speech was detected.",
 			transcriptUrl,
 			recordingUrl: undefined,
 			audioRecordingUrl: undefined,
@@ -117,10 +139,12 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, env }) => {
 		});
 	}
 
-	// 4. Call Ollama Cloud (if configured)
+	// 4. Call Ollama Cloud
 	let summary: string | undefined;
+	const ollamaModel = env.OLLAMA_MODEL || "gpt-oss:120b";
+
 	if (env.OLLAMA_BASE_URL && env.OLLAMA_API_KEY && env.OLLAMA_API_KEY !== "placeholder") {
-		console.log("[summary.ts] Step 4: Calling Ollama Cloud at:", env.OLLAMA_BASE_URL, "model:", env.OLLAMA_MODEL || "llama3.1:8b");
+		console.log("[summary.ts] Step 4: Calling Ollama Cloud at:", env.OLLAMA_BASE_URL, "model:", ollamaModel);
 		try {
 			const ollamaRes = await fetch(`${env.OLLAMA_BASE_URL}/api/chat`, {
 				method: "POST",
@@ -129,11 +153,11 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, env }) => {
 					Authorization: `Bearer ${env.OLLAMA_API_KEY}`,
 				},
 				body: JSON.stringify({
-					model: env.OLLAMA_MODEL || "llama3.1:8b",
+					model: ollamaModel,
 					stream: false,
 					messages: [
 						{ role: "system", content: SUMMARY_SYSTEM_PROMPT },
-						{ role: "user", content: transcriptText },
+						{ role: "user", content: `Here is the meeting transcript:\n\n${transcriptText}` },
 					],
 				}),
 			});
@@ -146,6 +170,9 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, env }) => {
 				};
 				summary = ollamaJson.message?.content;
 				console.log("[summary.ts] Ollama summary received, length:", summary?.length || 0, "chars");
+				if (summary) {
+					console.log("[summary.ts] Summary preview (first 300 chars):", summary.slice(0, 300));
+				}
 			} else {
 				const errText = await ollamaRes.text();
 				console.log("[summary.ts] Ollama call failed:", errText);

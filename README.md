@@ -1,443 +1,244 @@
-# VE-Call
+# VE Rooom
 
-A Google Meet–style video conferencing app with built-in **meeting recording**, **full-meeting transcription**, and **AI-generated summaries + action items** — built on Cloudflare RealtimeKit.
+Video conferencing with AI-powered transcription and meeting summaries. Built on Cloudflare RealtimeKit.
 
-> **Status:** Planning / pre-implementation
-> **Stack:** Cloudflare RealtimeKit · Cloudflare Pages Functions · React + Vite · Ollama Cloud API
-> **Goal:** Anyone with a room link joins by entering a name. The full meeting is recorded, transcribed, and summarized automatically. Supports 5+ participants.
+**Live:** [ve-rooom.pages.dev](https://ve-rooom.pages.dev)
 
----
+## Features
 
-## Why RealtimeKit (not a raw SFU fork)
+- **Instant meetings** — No signup required. Enter your name, click New Meeting, share the link.
+- **Auto-recording** — Every meeting is recorded automatically (MP4 video + MP3 audio).
+- **AI transcription** — Post-meeting transcription via Whisper Large v3 Turbo on Cloudflare Workers AI.
+- **AI summary** — Meeting summary with key decisions and action items (Ollama Cloud or Cloudflare built-in).
+- **Google Sign-in** — Optional Google auth via central PocketBase auth gateway.
+- **Dashboard** — View all past meetings with one-click access to summaries and downloads.
+- **5+ participants** — Powered by RealtimeKit SFU, scales natively.
 
-There are two ways to build on Cloudflare Realtime:
+## Tech Stack
 
-| | cloudflare/meet (Orange Meets) | **RealtimeKit** ← we use this |
-|---|---|---|
-| Layer | Raw Realtime SFU | High-level SDK on top of SFU |
-| You build | Signaling, tracks, rooms, recording, transcript — all from scratch | Just the app shell + branding |
-| Recording | Build yourself (MediaRecorder → R2) | Built-in (`record_on_start`, `rtk-recording-toggle`) |
-| Transcription | Build yourself (stream audio → STT) | Built-in (`transcribe_on_end`, Whisper on Workers AI) |
-| Speaker diarization | Build yourself | Built-in (per-participant audio tracks) |
-| Summary | Build yourself | Built-in (`summarize_on_end`) + Ollama enrichment |
-| Auth tokens | Your own | Per-participant `authToken` via REST API |
-| Roles | Your own | Presets system |
-| Effort to MVP | Weeks | Days |
-
-RealtimeKit handles the recording engine, transcription engine, and summary engine. Our code is a thin auth-token-minting Worker + a React shell around `<RtkMeeting>`.
-
----
-
-## Architecture
-
-```
-┌─────────────────┐    authToken     ┌──────────────────────────┐
-│  React (Vite)   │ ◀──────────────▶ │  Cloudflare Pages       │
-│  @cloudflare/   │                   │  Functions (Worker)     │
-│  realtimekit-   │                   │                          │
-│  react + -ui    │                   │  POST /api/rooms         │
-│                  │                   │   → Create meeting        │
-│  <RtkMeeting/>  │                   │   → Add participant       │
-│  rtk-recording-  │                   │   → Return authToken      │
-│  toggle          │                   │                          │
-│                  │                   │  GET  /api/summary/:id   │
-│                  │                   │   → Fetch transcript       │
-│                  │                   │   → Call Ollama Cloud     │
-│                  │                   │   → Return summary        │
-└─────────────────┘                   └──────────────────────────┘
-        ▲ WebRTC ▲                              │ REST
-        │       │                              ▼
-        ▼       ▼                  ┌─────────────────────────┐
-┌──────────────────────────────────┐│  Ollama Cloud API      │
-│  Cloudflare RealtimeKit (managed) ││  (LLM for summary)     │
-│  • Media routing (SFU)            │└─────────────────────────┘
-│  • Recording engine                │
-│  • Transcription engine (Whisper) │
-│  • Summary engine (built-in)      │
-└──────────────────────────────────┘
-```
-
-**Why a Worker (not a pure SPA)?** The `authToken` for each participant must be minted server-side using the Cloudflare API token — that token can never live in the browser. The Worker is the trusted intermediary. Everything else (media, recording, transcription) is handled by RealtimeKit's managed infrastructure.
-
----
-
-## How Transcription Works
-
-RealtimeKit provides **two transcription modes**, both powered by Cloudflare Workers AI.
-
-### Mode 1 — Real-time transcription (live captions) — *not in MVP*
-
-| | |
+| Layer | Technology |
 |---|---|
-| Model | Deepgram Nova-3 on Workers AI |
-| When | During the meeting |
-| Enable | `permissions.transcription_enabled: true` in preset |
-| Cost | ~836 Neurons/min (12 min free/day on Free plan) |
-| UI | `rtk-transcripts` component (live captions in sidebar) |
+| Frontend | React 18 + Vite 5 + TypeScript |
+| UI Components | `@cloudflare/realtimekit-react-ui` (136 Web Components) |
+| Backend | Cloudflare Pages Functions (Workers) |
+| Video/Media | Cloudflare RealtimeKit (managed SFU + recording + transcription) |
+| Auth | Google OAuth via PocketBase (`formsdb.exe.xyz`) |
+| Summary LLM | Ollama Cloud API (configurable, falls back to CF built-in) |
+| Deployment | Cloudflare Pages (GitHub-connected auto-deploy) |
 
-### Mode 2 — Post-meeting transcription — **used in MVP**
+## Quick Start
 
-| | |
-|---|---|
-| Model | Whisper Large v3 Turbo on Workers AI |
-| When | After the meeting ends |
-| Enable | `transcribe_on_end: true` at meeting creation |
-| Cost | ~47 Neurons/min (3.5 hrs free/day on Free plan) |
-| Output | CSV, JSON, SRT, VTT |
-| Retention | 7 days in R2 (presigned URLs) |
-| Retrieval | `GET /sessions/{sessionId}/transcript` |
+### Prerequisites
 
-**How it works:**
-1. RealtimeKit records each participant's audio as a separate track during the meeting.
-2. After the session ends, Whisper Large v3 Turbo processes each track.
-3. RealtimeKit assembles a final transcript with **speaker diarization** (because tracks are per-participant).
-4. Transcript files are stored in R2 for 7 days.
-5. URL is delivered via webhook (`meeting.transcript` event) or REST API.
-6. Our Worker polls the REST API on demand (no webhook receiver needed for MVP).
+- Node.js 18+
+- A Cloudflare account with RealtimeKit enabled
+- A RealtimeKit app created in the [Cloudflare dashboard](https://dash.cloudflare.com/?to=/:account/realtime)
 
-### The Full Pipeline
+### 1. Clone & Install
 
-```
-Meeting created with:
-  transcribe_on_end: true
-  record_on_start: true
-  summarize_on_end: true
-  ai_config.transcription.language: "en"
-        │
-        ▼
-During meeting ──── RealtimeKit SFU records each participant's audio track
-        │
-        ▼
-Meeting ends ──── Whisper Large v3 Turbo processes each track
-        │                          (speaker diarization built-in)
-        ▼
-Transcript files (CSV/JSON/SRT/VTT) stored in R2, 7-day retention
-        │
-        ▼
-User visits /summary/:roomId
-        │
-        ▼
-Our Worker: GET /sessions/{id}/transcript → fetch JSON transcript
-        │
-        ▼
-Our Worker: POST to Ollama Cloud API with transcript
-        │
-        ▼
-Richer summary + action items (Markdown) rendered in browser
-```
-
-### What Cloudflare Handles vs What We Build
-
-| Concern | Who |
-|---|---|
-| Audio capture per participant | RealtimeKit SFU (managed) |
-| STT inference (Whisper) | Workers AI (managed) |
-| Speaker diarization | RealtimeKit (per-track processing) |
-| Transcript storage (R2, 7 days) | RealtimeKit (managed) |
-| Transcript retrieval (REST) | Our Worker |
-| Live transcript UI | (skipped in MVP — post-meeting only) |
-| Summary generation | Ollama Cloud (our Worker calls it) |
-| Summary display | Our React app |
-
-**For transcription specifically, we write ~0 lines of custom STT code.** The only transcription-adjacent code is the Worker endpoint that fetches the already-generated transcript and forwards it to Ollama.
-
----
-
-## How Recording Works
-
-RealtimeKit records meetings as composite recordings or separate participant audio tracks — all managed.
-
-| | |
-|---|---|
-| Enable | `record_on_start: true` at meeting creation |
-| UI | `rtk-recording-toggle` + `rtk-recording-indicator` (built-in to `<RtkMeeting>`) |
-| Storage | RealtimeKit-managed R2 bucket (`realtimekit_bucket_config.enabled: true`) |
-| Config | Audio codec (MP3/AAC), video codec (H264/VP8), resolution, watermark, max duration |
-| Retrieval | `GET /meetings/{meetingId}/recordings` REST API |
-| Retention | 7 days (presigned URLs) |
-
-No MediaRecorder, no R2 upload plumbing, no recording bot. RealtimeKit does it all.
-
----
-
-## Phased Implementation
-
-### Phase 0 — Cloudflare Setup (manual, ~15 min)
-1. Sign in to [Cloudflare dashboard](https://dash.cloudflare.com)
-2. Go to **Realtime → Realtime Kit → Create App** → name it `ve-call`
-3. Note the **App ID** (`RTK_APP_ID`)
-4. Note the **Account ID** (`CF_ACCOUNT_ID`)
-5. Create an API token at [profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens) with **Realtime → Realtime Admin** permission (`CF_API_TOKEN`)
-6. Check the default **presets** in the dashboard — confirm one allows group-call host (camera/mic/screen-share). If not, create one named `group-call-host`.
-7. Get an **Ollama Cloud API key** + base URL (`OLLAMA_API_KEY`, `OLLAMA_BASE_URL`) — can be wired later.
-
-> ✅ Milestone: All secrets ready to paste into `.dev.vars`
-
-### Phase 1 — Scaffold the Project (~30 min)
-```
-ve-call/
-├── functions/                 # Cloudflare Pages Functions (Worker backend)
-│   └── api/
-│       ├── rooms.ts             # POST → create meeting + host participant
-│       ├── rooms.[id].participants.ts  # POST → join existing room
-│       ├── summary.[id].ts     # GET  → fetch transcript + Ollama summary
-│       └── recordings.ts        # GET  → list recordings (dashboard data)
-├── src/
-│   ├── main.tsx
-│   ├── App.tsx                 # Routes: "/" and "/meeting/:roomId" and "/summary/:roomId"
-│   ├── lib/
-│   │   └── api.ts              # fetch helpers for /api/*
-│   └── pages/
-│       ├── Home.tsx            # Create/join room form
-│       ├── Meeting.tsx         # <RtkMeeting> with authToken
-│       ├── Summary.tsx         # Post-meeting summary view
-│       └── Dashboard.tsx       # List past meetings
-├── index.html
-├── package.json
-├── vite.config.ts
-├── tsconfig.json
-├── tsconfig.node.json
-├── .dev.vars                  # local secrets (gitignored)
-├── .dev.vars.example          # documented secrets template
-└── .gitignore
-```
-
-Commands:
 ```sh
-git init
-npm create vite@latest . -- --template react-ts
-npm i @cloudflare/realtimekit-react @cloudflare/realtimekit-react-ui
-npm i -D wrangler @cloudflare/workers-types
+git clone https://github.com/collectivewinca/ve-rooom.git
+cd ve-rooom
+npm install
 ```
 
-> ✅ Milestone: Empty app runs at `localhost:8787`
+### 2. Configure Environment
 
-### Phase 2 — Backend Worker: Create Room + Mint AuthToken (~1 hr)
+Create `.dev.vars` from the template:
 
-**`functions/api/rooms.ts`** — single POST endpoint:
-```ts
-POST /api/rooms
-  body: { name: string, roomTitle?: string }
-  1. POST /accounts/$CF_ACCOUNT_ID/realtime/kit/$RTK_APP_ID/meetings
-     body: {
-       title: roomTitle || "VE-Call",
-       record_on_start: true,
-       transcribe_on_end: true,
-       summarize_on_end: true,
-       ai_config: {
-         transcription: { language: "en" },
-         summarization: { summary_type: "general", text_format: "markdown" }
-       },
-       recording_config: {
-         realtimekit_bucket_config: { enabled: true },
-         audio_config: { codec: "MP3", export_file: true }
-       }
-     }
-  2. POST /accounts/$CF_ACCOUNT_ID/realtime/kit/$RTK_APP_ID/meetings/$meetingId/participants
-     body: { name, preset_name: "group-call-host" }
-  3. Return { roomId: meetingId, authToken }
+```sh
+cp .dev.vars.example .dev.vars
 ```
 
-Store nothing locally — RealtimeKit is the source of truth for meetings, participants, recordings, transcripts.
+Fill in your values:
 
-> ✅ Milestone: `curl -X POST localhost:8787/api/rooms -d '{"name":"Alice"}'` returns `{ roomId, authToken }`
-
-### Phase 3 — Frontend: Home + Meeting UI (~1 hr)
-
-**`src/pages/Home.tsx`**
-- Form: name input + optional room title
-- "New Room" button → `POST /api/rooms` → navigate to `/meeting/:roomId?authToken=...`
-- "Join Room" — reuses an existing `roomId`; calls `POST /api/rooms/:id/participants` returning a fresh authToken
-
-**`src/pages/Meeting.tsx`**
-```tsx
-const [meeting, initMeeting] = useRealtimeKitClient()
-useEffect(() => { initMeeting({ authToken }) }, [authToken])
-return (
-  <RealtimeKitProvider value={meeting}>
-    <RtkMeeting mode="fill" meeting={meeting} showSetupScreen={true} />
-  </RealtimeKitProvider>
-)
+```sh
+CF_ACCOUNT_ID=your_cloudflare_account_id
+CF_API_TOKEN=your_cloudflare_api_token
+RTK_APP_ID=your_realtimekit_app_id
+OLLAMA_API_KEY=your_ollama_cloud_key      # optional, use "placeholder" to skip
+OLLAMA_BASE_URL=https://ollama.com
+OLLAMA_MODEL=llama3.1:8b
 ```
 
-The default `<RtkMeeting>` already includes:
-- ✅ Video grid (handles 5+ participants out of the box)
-- ✅ Mic/camera/screen-share toggles
-- ✅ Participant list
-- ✅ Recording toggle + indicator (because `record_on_start` is on)
+### 3. Run Locally
 
-> ✅ Milestone: **Two browsers in a call. 5+ participants join. Recording indicator shows.** 🎯
+```sh
+npm run build
+npx wrangler pages dev dist --port 8787
+```
 
-### Phase 4 — Verify Recording (~30 min)
-- After a short call ends, call:
-  ```
-  GET /accounts/$CF_ACCOUNT_ID/realtime/kit/$RTK_APP_ID/meetings/$meetingId/recordings
-  ```
-- Confirm a recording object comes back with `download_url` (audio MP3 + video).
-- Add a tiny `/recordings/:roomId` debug page to list/download recordings.
+Open [http://127.0.0.1:8787](http://127.0.0.1:8787).
 
-> ✅ Milestone: Download an MP4/MP3 of a test call
+### 4. Deploy
 
-### Phase 5 — Transcript Display + Ollama Summary (~1.5 hrs)
+```sh
+npm run build
+npx wrangler pages deploy dist --project-name ve-rooom --branch main
+```
 
-**`functions/api/summary.[id].ts`** — concrete implementation:
-```ts
-export const onRequestGet: PagesFunction<Env> = async ({ params, env }) => {
-  const meetingId = params.id as string
+Set production secrets:
 
-  // 1. Find the latest ended session for this meeting
-  const sessionsRes = await fetch(
-    `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}` +
-    `/realtime/kit/${env.RTK_APP_ID}/meetings/${meetingId}/sessions?status=ENDED`,
-    { headers: { Authorization: `Bearer ${env.CF_API_TOKEN}` } }
-  )
-  const sessions = await sessionsRes.json()
-  const session = sessions.data?.sessions?.[0]
-  if (!session) return json({ status: "no_ended_session" })
+```sh
+echo "your_value" | npx wrangler pages secret put CF_ACCOUNT_ID --project-name ve-rooom
+echo "your_value" | npx wrangler pages secret put CF_API_TOKEN --project-name ve-rooom
+echo "your_value" | npx wrangler pages secret put RTK_APP_ID --project-name ve-rooom
+echo "your_value" | npx wrangler pages secret put OLLAMA_API_KEY --project-name ve-rooom
+echo "your_value" | npx wrangler pages secret put OLLAMA_BASE_URL --project-name ve-rooom
+echo "your_value" | npx wrangler pages secret put OLLAMA_MODEL --project-name ve-rooom
+```
 
-  // 2. Fetch transcript URL
-  const tRes = await fetch(
-    `.../sessions/${session.id}/transcript`,
-    { headers: { Authorization: `Bearer ${env.CF_API_TOKEN}` } }
-  )
-  const transcript = await tRes.json()
-  if (!transcript.downloadUrl) return json({ status: "processing" })
+## Project Structure
 
-  // 3. Download the JSON transcript file
-  const transcriptText = await (await fetch(transcript.downloadUrl)).text()
+```
+ve-rooom/
+├── functions/                      # Cloudflare Pages Functions (serverless API)
+│   └── api/
+│       ├── rooms.ts                 # POST → create meeting + host participant
+│       ├── rooms/[id]/
+│       │   └── participants.ts      # POST → join existing room as participant
+│       ├── summary/
+│       │   └── [id].ts              # GET → fetch transcript, generate summary, return downloads
+│       └── meetings.ts             # GET → list all meetings for dashboard
+├── src/
+│   ├── components/
+│   │   └── Layout.tsx               # Navbar with Google auth (sign-in/avatar/sign-out)
+│   ├── lib/
+│   │   ├── api.ts                   # Frontend fetch helpers + TypeScript types
+│   │   ├── formsdb-auth.js          # Central Google auth via PocketBase (drop-in module)
+│   │   ├── formsdb-auth.d.ts        # TypeScript declarations for auth module
+│   │   └── useAuth.ts               # React hook for auth state
+│   ├── pages/
+│   │   ├── Home.tsx                 # Create/join meeting with tab toggle
+│   │   ├── Meeting.tsx              # RtkMeeting wrapper + copy link + summary link
+│   │   ├── Summary.tsx              # Polls for summary, renders Markdown, download links
+│   │   └── Dashboard.tsx            # Past meetings list with stats
+│   ├── App.tsx                      # Routes: /, /dashboard, /meeting/:roomId, /summary/:roomId
+│   ├── main.tsx                     # React entry point
+│   ├── index.css                    # Global resets + dark theme base
+│   └── pages.css                    # Full design system (golden gradient on black)
+├── public/
+│   └── favicon.svg                  # Custom SVG icon (golden camera lens)
+├── index.html                       # SPA shell with preconnect to auth hosts
+├── wrangler.toml                    # Cloudflare Pages config
+├── .dev.vars.example               # Environment variable template
+└── package.json
+```
 
-  // 4. Call Ollama Cloud
-  const ollamaRes = await fetch(`${env.OLLAMA_BASE_URL}/api/chat`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${env.OLLAMA_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: "llama3.1",
-      stream: false,
-      messages: [
-        { role: "system", content: SUMMARY_SYSTEM_PROMPT },
-        { role: "user", content: transcriptText },
-      ],
-    }),
-  })
+## API Endpoints
 
-  // 5. Return summary + links
-  const { message } = await ollamaRes.json()
-  return json({
-    summary: message.content,
-    transcriptUrl: transcript.downloadUrl,
-    recordingUrl: recording.downloadUrl,
-    sessionId: session.id,
-  })
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/rooms` | Create a new meeting + add host participant. Body: `{ name, roomTitle? }` → `{ roomId, authToken }` |
+| `POST` | `/api/rooms/:id/participants` | Join existing meeting. Body: `{ name }` → `{ authToken }` |
+| `GET` | `/api/summary/:id` | Fetch transcript + summary for a meeting. → `{ status, summary?, transcriptUrl?, recordingUrl?, audioRecordingUrl? }` |
+| `GET` | `/api/meetings` | List all meetings. → `{ meetings: [...] }` |
+
+### Summary Status Values
+
+| Status | Meaning |
+|---|---|
+| `ok` | Summary is ready |
+| `processing` | Transcript or summary still being generated (poll again in 5s) |
+| `no_ended_session` | Meeting hasn't ended yet or no session found |
+| `no_summary` | Transcript exists but no summary could be generated (Ollama not configured + CF summary unavailable) |
+| `error` | Server error |
+
+## How It Works
+
+### Meeting Flow
+
+1. User enters name on Home page → clicks **New Meeting**
+2. `POST /api/rooms` creates a RealtimeKit meeting with `record_on_start`, `transcribe_on_end`, `summarize_on_end` enabled
+3. Server adds the user as a participant with `group_call_host` preset → returns `authToken`
+4. Frontend navigates to `/meeting/:roomId?authToken=...`
+5. `useRealtimeKitClient` initializes the meeting → `<RtkMeeting>` renders the full video UI
+6. User clicks **Copy Join Link** to share `/?room=<roomId>` with others
+
+### Post-Meeting Flow
+
+1. After all participants leave, RealtimeKit ends the session
+2. Whisper Large v3 Turbo processes the audio → generates transcript (CSV in R2)
+3. User visits `/summary/:roomId`
+4. `GET /api/summary/:id`:
+   - Fetches ended sessions via `/sessions?meeting_id=...`
+   - Downloads transcript from R2 presigned URL
+   - If transcript is empty → returns "no speech detected" summary
+   - Calls Ollama Cloud API with transcript (if configured)
+   - Falls back to Cloudflare built-in summary
+   - Fetches recording download URLs (MP4 + MP3)
+5. Frontend polls every 5s until summary is ready, then renders Markdown + download links
+
+## Authentication
+
+Google Sign-in is optional and handled by a central PocketBase auth gateway at `formsdb.exe.xyz`.
+
+- One Google OAuth client serves all projects (no per-domain Google Console config)
+- Session stored in `localStorage` — persists across refreshes
+- Auth state exposed via `useAuth()` hook
+- Navbar shows avatar + name when logged in, sign-in button when not
+- Home page auto-fills the name field from the logged-in user
+
+See [`docs/AUTH.md`](docs/AUTH.md) for details.
+
+## Customization
+
+### Theme
+
+Edit CSS custom properties in `src/pages.css`:
+
+```css
+:root {
+  --gradient-primary: linear-gradient(135deg, #fbbf24 0%, #f59e0b 50%, #d97706 100%);
+  --color-bg: #0a0805;
+  --color-primary: #f59e0b;
+  /* ... */
 }
 ```
 
-**`src/pages/Summary.tsx`** — calls `GET /api/summary/:roomId` and renders the Markdown summary.
+### RealtimeKit UI
 
-> ✅ Milestone: Visit `/summary/<roomId>` after a call → see Markdown summary + action items
+The `<RtkMeeting>` component accepts a `config` prop with `designTokens` for theming the built-in video UI (colors, fonts, border radius). See the [RealtimeKit UI Kit docs](https://developers.cloudflare.com/realtimekit/ui-kit/) for full reference.
 
-### Phase 6 — Dashboard + Polish (~1 hr, optional)
-- `src/pages/Dashboard.tsx` (`/`) → `GET /api/recordings` → list all meetings (title, date, participants, recording link, summary link)
-- Replace Vite default branding with VE-Call logo/colors
-- Add a "Copy join link" button on Home
-- Handle loading + error states
+### Summary Prompt
 
-> ✅ Milestone: Polished home → meeting → summary flow
-
----
+Edit `SUMMARY_SYSTEM_PROMPT` in `functions/api/summary/[id].ts` to customize the AI summary format.
 
 ## Environment Variables
 
-Create `.dev.vars` (gitignored) from this template:
-
-```sh
-# Cloudflare account
-CF_ACCOUNT_ID=your_account_id
-CF_API_TOKEN=your_api_token_with_realtime_admin
-
-# RealtimeKit app
-RTK_APP_ID=your_realtimekit_app_id
-
-# Ollama Cloud (wire later — not needed for Phases 0-4)
-OLLAMA_API_KEY=your_ollama_cloud_key
-OLLAMA_BASE_URL=https://your-ollama-cloud-endpoint
-```
-
----
-
-## File Build Order
-
-| # | File | Phase |
+| Variable | Required | Description |
 |---|---|---|
-| 1 | `package.json` | 1 |
-| 2 | `vite.config.ts` | 1 |
-| 3 | `index.html` | 1 |
-| 4 | `tsconfig.json` | 1 |
-| 5 | `tsconfig.node.json` | 1 |
-| 6 | `.dev.vars.example` | 1 |
-| 7 | `.gitignore` | 1 |
-| 8 | `src/main.tsx` | 1 |
-| 9 | `src/App.tsx` | 1 |
-| 10 | `src/lib/api.ts` | 1 |
-| 11 | `src/pages/Home.tsx` | 3 |
-| 12 | `src/pages/Meeting.tsx` | 3 |
-| 13 | `functions/api/rooms.ts` | 2 |
-| 14 | `functions/api/rooms.[id].participants.ts` | 3 |
-| 15 | `src/pages/Summary.tsx` | 5 |
-| 16 | `functions/api/summary.[id].ts` | 5 |
-| 17 | `src/pages/Dashboard.tsx` | 6 |
-| 18 | `functions/api/recordings.ts` | 6 |
+| `CF_ACCOUNT_ID` | Yes | Cloudflare account ID |
+| `CF_API_TOKEN` | Yes | Cloudflare API token with Realtime admin permissions |
+| `RTK_APP_ID` | Yes | RealtimeKit app ID |
+| `OLLAMA_API_KEY` | No | Ollama Cloud API key (use `placeholder` to skip) |
+| `OLLAMA_BASE_URL` | No | Ollama Cloud base URL (default: `https://ollama.com`) |
+| `OLLAMA_MODEL` | No | Ollama model name (default: `llama3.1:8b`) |
 
----
+## Limitations
 
-## Cost Notes
+- **No meeting deletion** — The RealtimeKit REST API doesn't support deleting meetings, recordings, or sessions. Meetings can be set to `INACTIVE` to prevent joins. Recordings and sessions auto-expire from R2 after 7 days.
+- **Transcription is post-meeting only** — No live captions in the MVP.
+- **Summary depends on speech** — If nobody speaks during the meeting, the transcript is empty and no meaningful summary is generated.
 
-| Resource | Free tier | Beyond |
+## Cost
+
+| Resource | Free Tier | Beyond |
 |---|---|---|
 | Cloudflare Pages | 500 builds/month, unlimited requests | — |
 | Workers | 100,000 requests/day | $5/mo Paid plan |
-| Workers AI (transcription) | 10,000 Neurons/day | $0.011 / 1,000 Neurons |
-| Whisper (post-meeting) | ~47 Neurons/audio-min | ~3.5 hrs meeting/day free |
-| Deepgram (real-time) | ~836 Neurons/audio-min | ~12 min meeting/day free |
-| RealtimeKit recording | Beta — pricing TBA at GA | Usage-based at GA |
-| Ollama Cloud | Per Ollama's plan | — |
+| Workers AI (Whisper) | ~47 Neurons/audio-min | $0.011 / 1,000 Neurons |
+| RealtimeKit recording | Beta — pricing TBA | Usage-based at GA |
 
 **MVP cost on Free plan:** $0, as long as daily meeting audio stays under ~3.5 hours.
 
----
+## License
 
-## Decisions Log
+MIT
 
-| Decision | Choice | Rationale |
-|---|---|---|
-| Platform | RealtimeKit (not raw SFU fork) | Built-in recording, transcript, summary; days not weeks |
-| Deployment | Decide later | Start local; pick after MVP works |
-| Auth | No auth for MVP | Anyone with room link joins by name; fastest to value |
-| Summary LLM | Ollama Cloud API | Coded to env-vars; wired when keys available |
-| Transcription mode | Post-meeting only (Whisper) | Cheaper, simpler, covers "transcript full meeting" |
-| Summary trigger | Poll on demand | User visits /summary/:id; Worker fetches transcript; no webhook infra needed |
-| Repo strategy | Fresh git repo | Cleanest history |
-| Participant count | 5+ | SFU scales natively; default presets allow it |
+## Links
 
----
-
-## References
-
-- [Cloudflare Realtime overview](https://developers.cloudflare.com/realtime/)
-- [RealtimeKit docs](https://developers.cloudflare.com/realtime/realtimekit/)
-- [RealtimeKit quickstart](https://developers.cloudflare.com/realtime/realtimekit/quickstart/)
-- [UI Kit guide](https://developers.cloudflare.com/realtime/realtimekit/ui-kit/)
-- [Transcription docs](https://developers.cloudflare.com/realtime/realtimekit/ai/transcription/)
-- [Summary docs](https://developers.cloudflare.com/realtime/realtimekit/ai/summary/)
-- [Recording docs](https://developers.cloudflare.com/realtime/realtimekit/recording-guide/)
-- [REST API reference](https://developers.cloudflare.com/api/resources/realtime_kit/)
-- [realtimekit-web-examples](https://github.com/cloudflare/realtimekit-web-examples)
-- [default-meeting-ui example](https://github.com/cloudflare/realtimekit-web-examples/tree/staging/react-examples/examples/default-meeting-ui)
-
----
-
-## Next Step
-
-Say **"go"** and I'll start Phase 1: `git init` + Vite scaffold + RealtimeKit install.
+- [Live demo](https://ve-rooom.pages.dev)
+- [GitHub repo](https://github.com/collectivewinca/ve-rooom)
+- [Cloudflare RealtimeKit docs](https://developers.cloudflare.com/realtime/realtimekit/)
+- [RealtimeKit REST API](https://developers.cloudflare.com/api/resources/realtime_kit/)
