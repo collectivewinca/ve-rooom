@@ -97,7 +97,12 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, env }) => {
 	console.log("[summary.ts] Transcript response status:", transcriptRes.status);
 
 	if (!transcriptRes.ok) {
-		console.log("[summary.ts] Transcript not ready — returning processing");
+		const errText = await transcriptRes.text();
+		console.log("[summary.ts] Transcript endpoint failed — status:", transcriptRes.status, "body:", errText);
+		// If 4xx (not found / not configured), transcription likely won't ever arrive
+		if (transcriptRes.status >= 400 && transcriptRes.status < 500) {
+			return jsonResponse(200, { status: "no_summary", error: `Transcription not available (HTTP ${transcriptRes.status}). Recording exists — download the audio to transcribe manually.` });
+		}
 		return jsonResponse(200, { status: "processing" });
 	}
 

@@ -10,12 +10,14 @@ export default function Summary() {
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState("");
 	const [pollCount, setPollCount] = useState(0);
+	const [pollTimedOut, setPollTimedOut] = useState(false);
 
 	console.log("[Summary] Render — roomId:", roomId, "status:", data?.status, "loading:", loading, "pollCount:", pollCount);
 
 	useEffect(() => {
 		if (!roomId) return;
 		let cancelled = false;
+		const MAX_POLLS = 60;
 
 		async function poll() {
 			console.log("[Summary] Poll #", pollCount + 1, "— fetching summary for:", roomId);
@@ -26,6 +28,12 @@ export default function Summary() {
 				console.log("[Summary] Poll result — status:", res.status, "hasTranscript:", !!res.transcriptUrl, "hasRecording:", !!res.recordingUrl);
 				setData(res);
 				if (res.status === "processing") {
+					if (pollCount + 1 >= MAX_POLLS) {
+						console.log("[Summary] Max polls reached — giving up");
+						setPollTimedOut(true);
+						setLoading(false);
+						return;
+					}
 					console.log("[Summary] Status is processing — will retry in 5s");
 					setTimeout(poll, 5000);
 				} else {
@@ -57,9 +65,15 @@ export default function Summary() {
 				</button>
 			</div>
 
-			{loading && data?.status === "processing" && (
+			{loading && data?.status === "processing" && !pollTimedOut && (
 				<div className="status-processing">
 					Transcription is still processing (poll #{pollCount}). Retrying in 5s...
+				</div>
+			)}
+
+			{pollTimedOut && (
+				<div className="status-info">
+					Transcription is taking longer than expected. The audio recording is available below — you can transcribe it manually.
 				</div>
 			)}
 
@@ -76,7 +90,7 @@ export default function Summary() {
 				<div className="empty-state">
 					<img src="/favicon.svg" alt="VE Rooom" className="empty-state-icon" />
 					<h3>No summary available</h3>
-					<p>The transcript exists but no summary could be generated. This usually means the AI summary service isn't configured yet. You can still download the transcript and recording below.</p>
+					<p>{data.error || "The transcript exists but no summary could be generated."} You can still download the transcript and recording below.</p>
 				</div>
 			)}
 
