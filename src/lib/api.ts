@@ -30,8 +30,8 @@ export async function createRoom(name: string, roomTitle?: string): Promise<Crea
 		console.log("[api.ts] createRoom failed:", errText);
 		throw new Error(`Failed to create room: ${res.status}`);
 	}
-	const data = await res.json();
-	console.log("[api.ts] createRoom success — roomId:", (data as CreateRoomResponse).roomId);
+	const data = await res.json() as CreateRoomResponse;
+	console.log("[api.ts] createRoom success — roomId:", data.roomId);
 	return data;
 }
 
@@ -48,7 +48,7 @@ export async function joinRoom(roomId: string, name: string): Promise<JoinRoomRe
 		console.log("[api.ts] joinRoom failed:", errText);
 		throw new Error(`Failed to join room: ${res.status}`);
 	}
-	const data = await res.json();
+	const data = await res.json() as JoinRoomResponse;
 	console.log("[api.ts] joinRoom success — token received");
 	return data;
 }
@@ -62,7 +62,7 @@ export async function getSummary(roomId: string): Promise<SummaryResponse> {
 		console.log("[api.ts] getSummary failed:", errText);
 		throw new Error(`Failed to fetch summary: ${res.status}`);
 	}
-	const data = await res.json();
-	console.log("[api.ts] getSummary result status:", (data as SummaryResponse).status);
+	const data = await res.json() as SummaryResponse;
+	console.log("[api.ts] getSummary result status:", data.status);
 	return data;
 }
