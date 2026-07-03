@@ -72,6 +72,14 @@ export default function Summary() {
 				</div>
 			)}
 
+			{data?.status === "no_summary" && (
+				<div className="empty-state">
+					<img src="/favicon.svg" alt="VE Rooom" className="empty-state-icon" />
+					<h3>No summary available</h3>
+					<p>The transcript exists but no summary could be generated. This usually means the AI summary service isn't configured yet. You can still download the transcript and recording below.</p>
+				</div>
+			)}
+
 			{data?.status === "error" && (
 				<div className="error">{data.error || "Failed to load summary"}</div>
 			)}

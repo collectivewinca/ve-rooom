@@ -103,6 +103,20 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, env }) => {
 	console.log("[summary.ts] Transcript text length:", transcriptText.length, "chars");
 	console.log("[summary.ts] Transcript preview (first 200 chars):", transcriptText.slice(0, 200));
 
+	// If transcript is empty (no speech detected), return early — no point polling forever
+	const trimmedTranscript = transcriptText.trim();
+	if (trimmedTranscript.length === 0 || trimmedTranscript.length < 20) {
+		console.log("[summary.ts] Transcript is empty or too short — no speech detected in meeting");
+		return jsonResponse(200, {
+			status: "ok",
+			summary: "## Summary\n\nNo speech was detected in this meeting. The transcript is empty, so no summary could be generated.\n\n## Key Decisions\n\n- None (no conversation recorded)\n\n## Action Items\n\n- [ ] **N/A** — No action items (no speech detected)",
+			transcriptUrl,
+			recordingUrl: undefined,
+			audioRecordingUrl: undefined,
+			sessionId: session.id,
+		});
+	}
+
 	// 4. Call Ollama Cloud (if configured)
 	let summary: string | undefined;
 	if (env.OLLAMA_BASE_URL && env.OLLAMA_API_KEY && env.OLLAMA_API_KEY !== "placeholder") {
@@ -188,10 +202,10 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, env }) => {
 		console.log("[summary.ts] Recording fetch threw error:", e instanceof Error ? e.message : String(e));
 	}
 
-	console.log("[summary.ts] Done — status:", summary ? "ok" : "processing");
+	console.log("[summary.ts] Done — status:", summary ? "ok" : "no_summary");
 
 	return jsonResponse(200, {
-		status: summary ? "ok" : "processing",
+		status: summary ? "ok" : "no_summary",
 		summary,
 		transcriptUrl,
 		recordingUrl,

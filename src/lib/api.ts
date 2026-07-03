@@ -8,7 +8,7 @@ export interface JoinRoomResponse {
 }
 
 export interface SummaryResponse {
-	status: "ok" | "processing" | "no_ended_session" | "error";
+	status: "ok" | "processing" | "no_ended_session" | "no_summary" | "error";
 	summary?: string;
 	transcriptUrl?: string;
 	recordingUrl?: string;
