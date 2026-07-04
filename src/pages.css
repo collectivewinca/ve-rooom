@@ -581,6 +581,7 @@
 	max-width: 860px;
 	margin: 0 auto;
 	padding: 2rem 1.5rem 4rem;
+	position: relative;
 }
 
 .summary-header {
@@ -598,6 +599,50 @@
 
 .summary-header .btn-secondary {
 	width: auto;
+	margin: 0;
+}
+
+/* ============================================
+   Summary coming soon — blur overlay
+   ============================================ */
+
+.summary-body-wrap {
+	position: relative;
+	transition: filter 0.3s ease;
+}
+
+.summary-body-wrap.blurred {
+	filter: blur(6px);
+	pointer-events: none;
+	user-select: none;
+}
+
+.summary-overlay {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	z-index: 10;
+	pointer-events: none;
+}
+
+.summary-overlay-inner {
+	text-align: center;
+	pointer-events: auto;
+}
+
+.summary-overlay-inner h2 {
+	font-size: 1.5rem;
+	font-weight: 800;
+	color: var(--color-primary-light);
+	margin: 0 0 0.5rem;
+	letter-spacing: -0.02em;
+}
+
+.summary-overlay-sub {
+	font-size: 0.875rem;
+	color: var(--color-text-muted);
 	margin: 0;
 }
 
