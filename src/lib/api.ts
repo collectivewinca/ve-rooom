@@ -15,6 +15,7 @@ export interface SummaryResponse {
 	audioRecordingUrl?: string;
 	sessionId?: string;
 	error?: string;
+	transcript_text?: string;
 }
 
 function getAuthToken(): string | null {

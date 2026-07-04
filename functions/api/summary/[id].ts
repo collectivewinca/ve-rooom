@@ -134,7 +134,6 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, env }) => {
 		console.log("[summary.ts] No transcript URL — returning processing");
 		return jsonResponse(200, { status: "processing" });
 	}
-
 	// 3. Download the transcript file
 	console.log("[summary.ts] Step 3: Downloading transcript file");
 	const transcriptFileRes = await fetch(transcriptUrl);
@@ -143,23 +142,160 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, env }) => {
 		console.log("[summary.ts] Transcript file download failed — returning processing");
 		return jsonResponse(200, { status: "processing" });
 	}
-	const transcriptText = await transcriptFileRes.text();
+	let transcriptText = await transcriptFileRes.text();
 	console.log("[summary.ts] Transcript text length:", transcriptText.length, "chars");
 	console.log("[summary.ts] Transcript preview (first 200 chars):", transcriptText.slice(0, 200));
 
-	// If transcript is empty (no speech detected), return early
+	// 3.5 Fetch recording URL (for Whisper fallback & download)
+	console.log("[summary.ts] Step 3.5: Fetching recording URL");
+	let recordingUrl: string | undefined;
+	let audioRecordingUrl: string | undefined;
+	try {
+		const recRes = await fetch(
+			`${RTK_BASE}/${env.CF_ACCOUNT_ID}/realtime/kit/${env.RTK_APP_ID}/recordings?meeting_id=${meetingId}`,
+			{ headers: authHeaders }
+		);
+		console.log("[summary.ts] Recordings response status:", recRes.status);
+		if (recRes.ok) {
+			const recJson = await recRes.json() as {
+				success: boolean;
+				data?: { meeting_id: string; download_url: string; audio_download_url?: string; status: string }[];
+			};
+			const rec = recJson.data?.find((r) => r.meeting_id === meetingId);
+			recordingUrl = rec?.download_url;
+			audioRecordingUrl = rec?.audio_download_url;
+			console.log("[summary.ts] Recording URL:", recordingUrl ? recordingUrl.slice(0, 60) + "..." : "none");
+			console.log("[summary.ts] Audio recording URL:", audioRecordingUrl ? audioRecordingUrl.slice(0, 60) + "..." : "none");
+		}
+	} catch (e) {
+		console.log("[summary.ts] Recording fetch threw error:", e instanceof Error ? e.message : String(e));
+	}
+
+	// If transcript is empty, try Workers AI Whisper fallback from audio recording
 	const trimmedTranscript = transcriptText.trim();
 	const transcriptLines = trimmedTranscript.split("\n").filter((l) => l.trim());
 	if (transcriptLines.length === 0) {
-		console.log("[summary.ts] Transcript is empty or too short — no speech detected in meeting");
-		return jsonResponse(200, {
-			status: "ok",
-			summary: "## Meeting Summary\n\nNo speech was detected in this meeting. The transcript is empty, so no summary could be generated.\n\n## Key Topics Discussed\n\n- No topics were discussed (no speech detected in the recording)\n\n## Decisions Made\n\n- No decisions were made (no conversation recorded)\n\n## Action Items\n\n- [ ] **N/A** — No action items (no speech detected)\n\n## Open Questions\n\n- No open questions\n\n## Participants\n\n- No participants spoke during this meeting\n\n## Sentiment & Engagement\n\nNo assessment available — no speech was detected.",
-			transcriptUrl,
-			recordingUrl: undefined,
-			audioRecordingUrl: undefined,
-			sessionId: session.id,
-		});
+		console.log("[summary.ts] CF transcript is empty — checking for audio recording to run Whisper fallback");
+
+		if (audioRecordingUrl) {
+			console.log("[summary.ts] Audio recording found — attempting Workers AI Whisper transcription");
+			try {
+				// Download audio
+				console.log("[summary.ts] Downloading audio from:", audioRecordingUrl.slice(0, 80) + "...");
+				const audioRes = await fetch(audioRecordingUrl);
+				console.log("[summary.ts] Audio download response status:", audioRes.status);
+
+				if (audioRes.ok) {
+					// Check file size from Content-Length header
+					const contentLength = audioRes.headers.get("content-length");
+					const sizeMb = contentLength ? (parseInt(contentLength) / (1024 * 1024)) : 0;
+					console.log("[summary.ts] Audio file size:", sizeMb.toFixed(1), "MB");
+
+					// Workers AI Whisper limit is ~25MB; skip if larger
+					if (sizeMb > 25) {
+						console.log("[summary.ts] Audio too large for Workers AI Whisper (", sizeMb.toFixed(1), "MB > 25MB) — returning download link");
+						return jsonResponse(200, {
+							status: "ok",
+							summary: "## Meeting Summary\n\nThe meeting recording is available, but it's too long (" + sizeMb.toFixed(1) + " MB) for automatic transcription via Workers AI Whisper (max 25 MB).\n\nDownload the audio recording below and transcribe it manually.",
+							transcriptUrl,
+							recordingUrl,
+							audioRecordingUrl,
+							sessionId: session.id,
+						});
+					}
+
+					const audioBuffer = await audioRes.arrayBuffer();
+					console.log("[summary.ts] Audio downloaded, size:", audioBuffer.byteLength, "bytes");
+
+					// Convert to base64
+					const audioBytes = new Uint8Array(audioBuffer);
+					let binary = "";
+					for (let i = 0; i < audioBytes.length; i++) {
+						binary += String.fromCharCode(audioBytes[i]);
+					}
+					const audioBase64 = btoa(binary);
+					console.log("[summary.ts] Audio base64 encoded, length:", audioBase64.length);
+
+					// Call Workers AI Whisper
+					console.log("[summary.ts] Calling Workers AI Whisper (@cf/openai/whisper-large-v3-turbo)");
+					const whisperRes = await fetch(
+						`${RTK_BASE}/${env.CF_ACCOUNT_ID}/ai/run/@cf/openai/whisper-large-v3-turbo`,
+						{
+							method: "POST",
+							headers: {
+								Authorization: `Bearer ${env.CF_API_TOKEN}`,
+								"Content-Type": "application/json",
+							},
+							body: JSON.stringify({ audio: audioBase64 }),
+						}
+					);
+					console.log("[summary.ts] Whisper response status:", whisperRes.status);
+
+					if (whisperRes.ok) {
+						const whisperJson = await whisperRes.json() as {
+							result?: { text?: string };
+						};
+						const whisperText = whisperJson.result?.text;
+						console.log("[summary.ts] Whisper transcription received, length:", whisperText?.length || 0, "chars");
+						if (whisperText && whisperText.trim()) {
+							transcriptText = whisperText.trim();
+							console.log("[summary.ts] Whisper transcript preview (first 200 chars):", transcriptText.slice(0, 200));
+						} else {
+							console.log("[summary.ts] Whisper returned empty result — no speech detected in audio");
+							return jsonResponse(200, {
+								status: "ok",
+								summary: "## Meeting Summary\n\nWorkers AI Whisper processed the audio but detected no speech. The recording may be silent or contain only background noise.",
+								transcriptUrl,
+								recordingUrl,
+								audioRecordingUrl,
+								sessionId: session.id,
+							});
+						}
+					} else {
+						const whisperErr = await whisperRes.text();
+						console.log("[summary.ts] Workers AI Whisper failed:", whisperRes.status, whisperErr);
+						return jsonResponse(200, {
+							status: "ok",
+							summary: "## Meeting Summary\n\nAutomatic transcription via Workers AI Whisper failed (HTTP " + whisperRes.status + ").\n\nDownload the audio recording below and transcribe it manually.",
+							transcriptUrl,
+							recordingUrl,
+							audioRecordingUrl,
+							sessionId: session.id,
+						});
+					}
+				} else {
+					console.log("[summary.ts] Audio download failed — returning no speech");
+					return jsonResponse(200, {
+						status: "ok",
+						summary: "## Meeting Summary\n\nNo speech was detected in this meeting. The transcript is empty, and the audio recording could not be downloaded for transcription.",
+						transcriptUrl,
+						recordingUrl,
+						audioRecordingUrl,
+						sessionId: session.id,
+					});
+				}
+			} catch (e) {
+				console.log("[summary.ts] Whisper fallback threw error:", e instanceof Error ? e.message : String(e));
+				return jsonResponse(200, {
+					status: "ok",
+					summary: "## Meeting Summary\n\nAutomatic transcription failed with an error: " + (e instanceof Error ? e.message : String(e)) + "\n\nDownload the audio recording below and transcribe it manually.",
+					transcriptUrl,
+					recordingUrl,
+					audioRecordingUrl,
+					sessionId: session.id,
+				});
+			}
+		} else {
+			console.log("[summary.ts] No audio recording available — no speech detected");
+			return jsonResponse(200, {
+				status: "ok",
+				summary: "## Meeting Summary\n\nNo speech was detected in this meeting. The transcript is empty, and no audio recording is available for fallback transcription.\n\n## Key Topics Discussed\n\n- No topics were discussed (no speech detected in the recording)\n\n## Decisions Made\n\n- No decisions were made (no conversation recorded)\n\n## Action Items\n\n- [ ] **N/A** — No action items (no speech detected)\n\n## Open Questions\n\n- No open questions\n\n## Participants\n\n- No participants spoke during this meeting\n\n## Sentiment & Engagement\n\nNo assessment available — no speech was detected.",
+				transcriptUrl,
+				recordingUrl,
+				audioRecordingUrl,
+				sessionId: session.id,
+			});
+		}
 	}
 
 	// 4. Call Ollama Cloud
@@ -227,31 +363,6 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, env }) => {
 		}
 	}
 
-	// 6. Fetch recording URL (best-effort)
-	console.log("[summary.ts] Step 6: Fetching recording URL (best-effort)");
-	let recordingUrl: string | undefined;
-	let audioRecordingUrl: string | undefined;
-	try {
-		const recRes = await fetch(
-			`${RTK_BASE}/${env.CF_ACCOUNT_ID}/realtime/kit/${env.RTK_APP_ID}/recordings?meeting_id=${meetingId}`,
-			{ headers: authHeaders }
-		);
-		console.log("[summary.ts] Recordings response status:", recRes.status);
-		if (recRes.ok) {
-			const recJson = await recRes.json() as {
-				success: boolean;
-				data?: { meeting_id: string; download_url: string; audio_download_url?: string; status: string }[];
-			};
-			const rec = recJson.data?.find((r) => r.meeting_id === meetingId);
-			recordingUrl = rec?.download_url;
-			audioRecordingUrl = rec?.audio_download_url;
-			console.log("[summary.ts] Recording URL:", recordingUrl ? recordingUrl.slice(0, 60) + "..." : "none");
-			console.log("[summary.ts] Audio recording URL:", audioRecordingUrl ? audioRecordingUrl.slice(0, 60) + "..." : "none");
-		}
-	} catch (e) {
-		console.log("[summary.ts] Recording fetch threw error:", e instanceof Error ? e.message : String(e));
-	}
-
 	console.log("[summary.ts] Done — status:", summary ? "ok" : "no_summary");
 
 	return jsonResponse(200, {
@@ -261,6 +372,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, env }) => {
 		recordingUrl,
 		audioRecordingUrl,
 		sessionId: session.id,
+		transcript_text: transcriptText,
 	});
 };
 
