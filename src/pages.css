@@ -493,6 +493,35 @@
 	align-items: center;
 }
 
+.recording-indicator {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	background: rgba(0, 0, 0, 0.7);
+	color: #fbbf24;
+	padding: 6px 14px;
+	border-radius: var(--radius-full);
+	font-size: 0.7rem;
+	font-weight: 600;
+	backdrop-filter: blur(12px);
+	-webkit-backdrop-filter: blur(12px);
+	border: 1px solid rgba(251, 191, 36, 0.3);
+}
+
+.recording-dot {
+	display: inline-block;
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: #ef4444;
+	animation: recording-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes recording-pulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.3; }
+}
+
 .btn-share {
 	display: inline-flex;
 	align-items: center;

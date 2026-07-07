@@ -54,7 +54,7 @@ export default function Summary() {
 		};
 	}, [roomId]);
 
-	const hasDownloads = data?.transcriptUrl || data?.transcript_text || data?.recordingUrl || data?.audioRecordingUrl;
+	const hasDownloads = data?.transcriptUrl || data?.transcript_text || data?.recordingUrl || data?.audioRecordingUrl || (data?.trackFiles && data.trackFiles.length > 0);
 	const showSummary = data?.status === "ok" && !!data.summary;
 	const showBlur = data && data.status !== "no_ended_session" && data.status !== "error" && !showSummary;
 
@@ -110,7 +110,7 @@ export default function Summary() {
 							{data?.transcriptUrl && (
 								<a href={data.transcriptUrl} target="_blank" rel="noreferrer" className="download-card">
 									<div className="download-card-icon" style={{ background: "rgba(34, 197, 94, 0.15)" }}>
-										<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+										<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
 											<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
 											<polyline points="14 2 14 8 20 8"/>
 										</svg>
@@ -128,7 +128,7 @@ export default function Summary() {
 									className="download-card"
 								>
 									<div className="download-card-icon" style={{ background: "rgba(34, 197, 94, 0.15)" }}>
-										<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+										<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
 											<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
 											<polyline points="14 2 14 8 20 8"/>
 										</svg>
@@ -142,7 +142,7 @@ export default function Summary() {
 							{data?.recordingUrl && (
 								<a href={data.recordingUrl} target="_blank" rel="noreferrer" className="download-card">
 									<div className="download-card-icon" style={{ background: "rgba(99, 102, 241, 0.15)" }}>
-										<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#818cf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+										<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#818cf8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
 											<polygon points="23 7 16 12 23 17 23 7"/>
 											<rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
 										</svg>
@@ -156,7 +156,7 @@ export default function Summary() {
 							{data?.audioRecordingUrl && (
 								<a href={data.audioRecordingUrl} target="_blank" rel="noreferrer" className="download-card">
 									<div className="download-card-icon" style={{ background: "rgba(236, 72, 153, 0.15)" }}>
-										<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#f472b6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+										<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#f472b6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
 											<path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
 											<path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
 										</svg>
@@ -167,6 +167,20 @@ export default function Summary() {
 									</div>
 								</a>
 							)}
+							{data?.trackFiles?.map((track, i) => (
+								<a key={i} href={track.downloadUrl} target="_blank" rel="noreferrer" className="download-card">
+									<div className="download-card-icon" style={{ background: "rgba(251, 191, 36, 0.15)" }}>
+										<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+											<path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+											<path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+										</svg>
+									</div>
+									<div className="download-card-info">
+										<div className="download-card-title">Participant {i + 1}</div>
+										<div className="download-card-subtitle">{track.userId.slice(0, 8)}… · WebM</div>
+									</div>
+								</a>
+							))}
 						</div>
 					</div>
 				)}

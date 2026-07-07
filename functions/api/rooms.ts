@@ -47,7 +47,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 
 	const meetingBody = {
 		title: body.roomTitle?.trim() || "VE-Call",
-		record_on_start: true,
+		record_on_start: false,
 		transcribe_on_end: true,
 		summarize_on_end: true,
 		ai_config: {
@@ -57,10 +57,6 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 				text_format: "markdown",
 				word_limit: 500,
 			},
-		},
-		recording_config: {
-			realtimekit_bucket_config: { enabled: true },
-			audio_config: { codec: "MP3", export_file: true },
 		},
 	};
 

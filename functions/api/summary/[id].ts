@@ -2,6 +2,9 @@ interface Env {
 	CF_ACCOUNT_ID: string;
 	CF_API_TOKEN: string;
 	RTK_APP_ID: string;
+	OPENROUTER_API_KEY: string;
+	OPENROUTER_MODEL?: string;
+	OPENROUTER_FREE_MODEL?: string;
 	OLLAMA_API_KEY: string;
 	OLLAMA_BASE_URL: string;
 	OLLAMA_MODEL?: string;
@@ -146,10 +149,11 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, env }) => {
 	console.log("[summary.ts] Transcript text length:", transcriptText.length, "chars");
 	console.log("[summary.ts] Transcript preview (first 200 chars):", transcriptText.slice(0, 200));
 
-	// 3.5 Fetch recording URL (for Whisper fallback & download)
-	console.log("[summary.ts] Step 3.5: Fetching recording URL");
+	// 3.5 Fetch recording URL (for composite + track recordings)
+	console.log("[summary.ts] Step 3.5: Fetching recordings");
 	let recordingUrl: string | undefined;
 	let audioRecordingUrl: string | undefined;
+	let trackFiles: { filename: string; downloadUrl: string; userId: string; peerId: string }[] = [];
 	try {
 		const recRes = await fetch(
 			`${RTK_BASE}/${env.CF_ACCOUNT_ID}/realtime/kit/${env.RTK_APP_ID}/recordings?meeting_id=${meetingId}`,
@@ -157,16 +161,64 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, env }) => {
 		);
 		console.log("[summary.ts] Recordings response status:", recRes.status);
 		if (recRes.ok) {
-			const recJson = await recRes.json() as {
-				success: boolean;
-				data?: { meeting_id: string; download_url: string; audio_download_url?: string; status: string }[];
-			};
-			const rec = recJson.data?.find((r) => r.meeting_id === meetingId);
-			recordingUrl = rec?.download_url;
-			audioRecordingUrl = rec?.audio_download_url;
-			console.log("[summary.ts] Recording URL:", recordingUrl ? recordingUrl.slice(0, 60) + "..." : "none");
-			console.log("[summary.ts] Audio recording URL:", audioRecordingUrl ? audioRecordingUrl.slice(0, 60) + "..." : "none");
+		const recJson = await recRes.json() as {
+			success: boolean;
+			data?: { meeting_id: string; session_id?: string; download_url: unknown; audio_download_url?: string; status: string; type?: string; output_file_name?: string; invoked_time?: string }[];
+		};
+		console.log("[summary.ts] Recordings data:", JSON.stringify(recJson.data?.map(r => ({ status: r.status, type: r.type, session_id: r.session_id?.slice(0,8), hasDownload: !!r.download_url, output: r.output_file_name?.slice(-10) }))));
+		// Filter to only recordings for the CURRENT session (prevent using old session recordings)
+		const sessionRecordings = (recJson.data || []).filter((r) => r.meeting_id === meetingId && r.session_id === session.id);
+		console.log("[summary.ts] Recordings for current session", session.id.slice(0,8), ":", sessionRecordings.length, "of", (recJson.data || []).length, "total");
+
+		// Sort by invoked_time so composite (usually first) is processed before track
+		sessionRecordings.sort((a, b) => (a.invoked_time || "").localeCompare(b.invoked_time || ""));
+
+		for (const rec of sessionRecordings) {
+			// Detect track recordings: output_file_name contains ".webm" OR download_url is an object/array (not a string)
+			const isTrack = (rec.output_file_name || "").includes(".webm") || typeof rec.download_url !== "string";
+
+			if (isTrack) {
+				console.log("[summary.ts] Found TRACK recording, status:", rec.status, "output:", rec.output_file_name?.slice(-20));
+				if (rec.status !== "UPLOADED") continue;
+
+				// download_url can be: { links: [{ layer_name, download_urls: { filename: { download_url } } }] } (object)
+				//                   OR: [{ layer_name, download_urls: { filename: { download_url } } }] (array)
+				let trackLayers: { layer_name?: string; download_urls?: Record<string, { download_url?: string }> }[] = [];
+				const du = rec.download_url as Record<string, unknown>;
+				if (Array.isArray(du)) {
+					trackLayers = du;
+				} else if (du && typeof du === "object" && Array.isArray(du.links)) {
+					trackLayers = du.links as typeof trackLayers;
+				} else if (du && typeof du === "object") {
+					trackLayers = [du] as unknown as typeof trackLayers;
+				}
+
+				for (const layer of trackLayers) {
+					const urls = layer.download_urls || {};
+					for (const [filename, info] of Object.entries(urls)) {
+						const parts = filename.replace(/\.webm$/, "").split("_");
+						const userId = parts[1] || "unknown";
+						const peerId = parts[2] || "unknown";
+						trackFiles.push({ filename, downloadUrl: info.download_url || "", userId, peerId });
+						console.log("[summary.ts] Track file:", filename, "userId:", userId);
+					}
+				}
+			} else {
+				// Composite recording: download_url is a string URL
+				console.log("[summary.ts] Found COMPOSITE recording, status:", rec.status, "output:", rec.output_file_name?.slice(-20));
+				if (rec.status !== "UPLOADED") continue;
+				if (typeof rec.download_url === "string") {
+					recordingUrl = rec.download_url;
+				}
+				if (rec.audio_download_url) {
+					audioRecordingUrl = rec.audio_download_url;
+				}
+				console.log("[summary.ts] Composite recording URL:", recordingUrl ? recordingUrl.slice(0, 60) + "..." : "none");
+				console.log("[summary.ts] Audio recording URL:", audioRecordingUrl ? audioRecordingUrl.slice(0, 60) + "..." : "none");
+			}
 		}
+		console.log("[summary.ts] Total track files:", trackFiles.length);
+	}
 	} catch (e) {
 		console.log("[summary.ts] Recording fetch threw error:", e instanceof Error ? e.message : String(e));
 	}
@@ -175,49 +227,128 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, env }) => {
 	const trimmedTranscript = transcriptText.trim();
 	const transcriptLines = trimmedTranscript.split("\n").filter((l) => l.trim());
 	if (transcriptLines.length === 0) {
-		console.log("[summary.ts] CF transcript is empty — checking for audio recording to run Whisper fallback");
+		console.log("[summary.ts] CF transcript is empty — checking for audio to run Whisper fallback");
 
-		if (audioRecordingUrl) {
-			console.log("[summary.ts] Audio recording found — attempting Workers AI Whisper transcription");
-			try {
-				// Download audio
-				console.log("[summary.ts] Downloading audio from:", audioRecordingUrl.slice(0, 80) + "...");
-				const audioRes = await fetch(audioRecordingUrl);
-				console.log("[summary.ts] Audio download response status:", audioRes.status);
+		if (trackFiles.length > 0) {
+			console.log("[summary.ts] Found", trackFiles.length, "track files — running Whisper per participant");
+			const participantTranscripts: string[] = [];
+			let allSkipped = true;
 
-				if (audioRes.ok) {
-					// Check file size from Content-Length header
+			for (const track of trackFiles) {
+				console.log("[summary.ts] Processing track:", track.filename, "userId:", track.userId);
+				try {
+					const audioRes = await fetch(track.downloadUrl);
+					console.log("[summary.ts] Track download status:", audioRes.status);
+					if (!audioRes.ok) {
+						console.log("[summary.ts] Track download failed — skipping");
+						continue;
+					}
+
 					const contentLength = audioRes.headers.get("content-length");
 					const sizeMb = contentLength ? (parseInt(contentLength) / (1024 * 1024)) : 0;
-					console.log("[summary.ts] Audio file size:", sizeMb.toFixed(1), "MB");
+					console.log("[summary.ts] Track file size:", sizeMb.toFixed(1), "MB");
 
-					// Workers AI Whisper limit is ~25MB; skip if larger
+				if (sizeMb > 25) {
+					console.log("[summary.ts] Track too large for Workers AI (", sizeMb.toFixed(1), "MB) — skipping");
+					participantTranscripts.push(`[Participant ${track.userId}]: Audio file too large (${sizeMb.toFixed(1)} MB) for automatic transcription. Download the WebM file to transcribe manually.`);
+					continue;
+				}
+				allSkipped = false;
+
+				const audioBuffer = await audioRes.arrayBuffer();
+
+				console.log("[summary.ts] Calling Workers AI Whisper (raw bytes) for track:", track.userId);
+				const whisperRes = await fetch(
+					`${RTK_BASE}/${env.CF_ACCOUNT_ID}/ai/run/@cf/openai/whisper`,
+					{
+						method: "POST",
+						headers: {
+							Authorization: `Bearer ${env.CF_API_TOKEN}`,
+							"Content-Type": "audio/webm",
+						},
+						body: audioBuffer,
+					}
+				);
+				console.log("[summary.ts] Whisper response status for track:", track.userId, whisperRes.status);
+
+				if (whisperRes.ok) {
+					const whisperJson = await whisperRes.json() as { result?: { text?: string } };
+					const whisperText = whisperJson.result?.text?.trim();
+					console.log("[summary.ts] Whisper transcript length for", track.userId, ":", whisperText?.length || 0);
+
+					// Detect hallucination: repeated short phrase like "Thank you. Thank you."
+					const isHallucination = (() => {
+						if (!whisperText || whisperText.length > 200) return false;
+						const firstPhrase = whisperText.split(".")[0];
+						if (!firstPhrase || firstPhrase.length > 30) return false;
+						const phraseCount = (whisperText.match(new RegExp(firstPhrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\.?", "g")) || []).length;
+						return phraseCount > 3;
+					})();
+
+					if (isHallucination) {
+						console.log("[summary.ts] Whisper hallucination detected on track (repeated phrase) — skipping");
+						continue;
+					}
+
+					if (whisperText && whisperText.length > 50) {
+						participantTranscripts.push(`[Participant ${track.userId}]: ${whisperText}`);
+					} else {
+						console.log("[summary.ts] Whisper transcript too short (", whisperText?.length || 0, "chars) — likely hallucination on silence");
+					}
+				} else {
+						const whisperErr = await whisperRes.text();
+						console.log("[summary.ts] Whisper failed for track", track.userId, ":", whisperRes.status, whisperErr);
+						if (whisperRes.status === 401) {
+							participantTranscripts.push(`[Participant ${track.userId}]: Workers AI authentication failed (401). CF API token needs Workers AI:Run scope.`);
+						}
+					}
+				} catch (e) {
+					console.log("[summary.ts] Track Whisper error:", e instanceof Error ? e.message : String(e));
+				}
+			}
+
+			if (participantTranscripts.length > 0 && !allSkipped) {
+				transcriptText = participantTranscripts.join("\n\n");
+				console.log("[summary.ts] Merged transcript from", participantTranscripts.length, "participants, total length:", transcriptText.length);
+				console.log("[summary.ts] Merged transcript preview:", transcriptText.slice(0, 200));
+			} else if (allSkipped && trackFiles.length > 0) {
+				console.log("[summary.ts] All track files were too large — falling back to composite audio if available");
+			}
+		}
+
+		if (transcriptLines.length === 0 && audioRecordingUrl) {
+			console.log("[summary.ts] Trying composite audio recording with Workers AI Whisper");
+			try {
+				const audioRes = await fetch(audioRecordingUrl);
+				console.log("[summary.ts] Composite audio download status:", audioRes.status);
+
+				if (audioRes.ok) {
+					const contentLength = audioRes.headers.get("content-length");
+					const sizeMb = contentLength ? (parseInt(contentLength) / (1024 * 1024)) : 0;
+					console.log("[summary.ts] Composite audio file size:", sizeMb.toFixed(1), "MB");
+
 					if (sizeMb > 25) {
-						console.log("[summary.ts] Audio too large for Workers AI Whisper (", sizeMb.toFixed(1), "MB > 25MB) — returning download link");
+						console.log("[summary.ts] Composite audio too large (", sizeMb.toFixed(1), "MB > 25MB) — returning download link");
 						return jsonResponse(200, {
 							status: "ok",
 							summary: "## Meeting Summary\n\nThe meeting recording is available, but it's too long (" + sizeMb.toFixed(1) + " MB) for automatic transcription via Workers AI Whisper (max 25 MB).\n\nDownload the audio recording below and transcribe it manually.",
 							transcriptUrl,
 							recordingUrl,
 							audioRecordingUrl,
+							trackFiles: trackFiles.length > 0 ? trackFiles : undefined,
 							sessionId: session.id,
 						});
 					}
 
 					const audioBuffer = await audioRes.arrayBuffer();
-					console.log("[summary.ts] Audio downloaded, size:", audioBuffer.byteLength, "bytes");
-
-					// Convert to base64
 					const audioBytes = new Uint8Array(audioBuffer);
 					let binary = "";
 					for (let i = 0; i < audioBytes.length; i++) {
 						binary += String.fromCharCode(audioBytes[i]);
 					}
 					const audioBase64 = btoa(binary);
-					console.log("[summary.ts] Audio base64 encoded, length:", audioBase64.length);
 
-					// Call Workers AI Whisper
-					console.log("[summary.ts] Calling Workers AI Whisper (@cf/openai/whisper-large-v3-turbo)");
+					console.log("[summary.ts] Calling Workers AI Whisper on composite audio");
 					const whisperRes = await fetch(
 						`${RTK_BASE}/${env.CF_ACCOUNT_ID}/ai/run/@cf/openai/whisper-large-v3-turbo`,
 						{
@@ -226,32 +357,28 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, env }) => {
 								Authorization: `Bearer ${env.CF_API_TOKEN}`,
 								"Content-Type": "application/json",
 							},
-							body: JSON.stringify({ audio: audioBase64 }),
-						}
-					);
-					console.log("[summary.ts] Whisper response status:", whisperRes.status);
+						body: JSON.stringify({ audio: audioBase64, language: "en" }),
+					}
+				);
+				console.log("[summary.ts] Whisper response status:", whisperRes.status);
 
-					if (whisperRes.ok) {
-						const whisperJson = await whisperRes.json() as {
-							result?: { text?: string };
-						};
-						const whisperText = whisperJson.result?.text;
-						console.log("[summary.ts] Whisper transcription received, length:", whisperText?.length || 0, "chars");
-						if (whisperText && whisperText.trim()) {
-							transcriptText = whisperText.trim();
-							console.log("[summary.ts] Whisper transcript preview (first 200 chars):", transcriptText.slice(0, 200));
+				if (whisperRes.ok) {
+					const whisperJson = await whisperRes.json() as { result?: { text?: string } };
+					const whisperText = whisperJson.result?.text;
+					console.log("[summary.ts] Whisper transcription received, length:", whisperText?.length || 0);
+					if (whisperText && whisperText.trim()) {
+						// Detect hallucination: repeated short phrase like "Thank you. Thank you."
+						const trimmed = whisperText.trim();
+						const firstPhrase = trimmed.split(".")[0];
+						const phraseCount = (trimmed.match(new RegExp(firstPhrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + "\\.?", "g")) || []).length;
+						if (phraseCount > 3 && trimmed.length < 200) {
+							console.log(`[summary.ts] Whisper hallucination detected on composite (repeated '${firstPhrase}' ${phraseCount}x) — transcript likely unreliable`);
 						} else {
-							console.log("[summary.ts] Whisper returned empty result — no speech detected in audio");
-							return jsonResponse(200, {
-								status: "ok",
-								summary: "## Meeting Summary\n\nWorkers AI Whisper processed the audio but detected no speech. The recording may be silent or contain only background noise.",
-								transcriptUrl,
-								recordingUrl,
-								audioRecordingUrl,
-								sessionId: session.id,
-							});
+							transcriptText = trimmed;
+							console.log("[summary.ts] Whisper transcript preview:", transcriptText.slice(0, 200));
 						}
-					} else {
+					}
+				} else {
 						const whisperErr = await whisperRes.text();
 						console.log("[summary.ts] Workers AI Whisper failed:", whisperRes.status, whisperErr);
 						return jsonResponse(200, {
@@ -260,50 +387,82 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, env }) => {
 							transcriptUrl,
 							recordingUrl,
 							audioRecordingUrl,
+							trackFiles: trackFiles.length > 0 ? trackFiles : undefined,
 							sessionId: session.id,
 						});
 					}
-				} else {
-					console.log("[summary.ts] Audio download failed — returning no speech");
-					return jsonResponse(200, {
-						status: "ok",
-						summary: "## Meeting Summary\n\nNo speech was detected in this meeting. The transcript is empty, and the audio recording could not be downloaded for transcription.",
-						transcriptUrl,
-						recordingUrl,
-						audioRecordingUrl,
-						sessionId: session.id,
-					});
 				}
 			} catch (e) {
-				console.log("[summary.ts] Whisper fallback threw error:", e instanceof Error ? e.message : String(e));
-				return jsonResponse(200, {
-					status: "ok",
-					summary: "## Meeting Summary\n\nAutomatic transcription failed with an error: " + (e instanceof Error ? e.message : String(e)) + "\n\nDownload the audio recording below and transcribe it manually.",
-					transcriptUrl,
-					recordingUrl,
-					audioRecordingUrl,
-					sessionId: session.id,
-				});
+				console.log("[summary.ts] Composite Whisper fallback threw error:", e instanceof Error ? e.message : String(e));
 			}
-		} else {
-			console.log("[summary.ts] No audio recording available — no speech detected");
+		}
+
+		if (transcriptText.trim().length === 0) {
+			console.log("[summary.ts] No transcript from any source — returning no speech");
 			return jsonResponse(200, {
 				status: "ok",
-				summary: "## Meeting Summary\n\nNo speech was detected in this meeting. The transcript is empty, and no audio recording is available for fallback transcription.\n\n## Key Topics Discussed\n\n- No topics were discussed (no speech detected in the recording)\n\n## Decisions Made\n\n- No decisions were made (no conversation recorded)\n\n## Action Items\n\n- [ ] **N/A** — No action items (no speech detected)\n\n## Open Questions\n\n- No open questions\n\n## Participants\n\n- No participants spoke during this meeting\n\n## Sentiment & Engagement\n\nNo assessment available — no speech was detected.",
+				summary: "## Meeting Summary\n\nNo speech was detected in this meeting. The transcript is empty, and no audio could be transcribed.\n\n## Key Topics Discussed\n\n- No topics were discussed (no speech detected)\n\n## Decisions Made\n\n- No decisions were made\n\n## Action Items\n\n- [ ] **N/A** — No action items\n\n## Open Questions\n\n- No open questions\n\n## Participants\n\n- No participants spoke during this meeting\n\n## Sentiment & Engagement\n\nNo assessment available.",
 				transcriptUrl,
 				recordingUrl,
 				audioRecordingUrl,
+				trackFiles: trackFiles.length > 0 ? trackFiles : undefined,
 				sessionId: session.id,
 			});
 		}
 	}
 
-	// 4. Call Ollama Cloud
+	// 4. Call OpenRouter (primary), then Ollama (fallback), then CF built-in (last resort)
 	let summary: string | undefined;
-	const ollamaModel = env.OLLAMA_MODEL || "gpt-oss:120b";
 
-	if (env.OLLAMA_BASE_URL && env.OLLAMA_API_KEY && env.OLLAMA_API_KEY !== "placeholder") {
-		console.log("[summary.ts] Step 4: Calling Ollama Cloud at:", env.OLLAMA_BASE_URL, "model:", ollamaModel);
+	// 4a. OpenRouter — try paid model first, then free model
+	const openrouterModels = [
+		env.OPENROUTER_MODEL || "openai/gpt-4o-mini",
+		env.OPENROUTER_FREE_MODEL || "openai/gpt-oss-120b:free",
+	].filter((m, i, arr) => arr.indexOf(m) === i); // dedup
+
+	for (const model of openrouterModels) {
+		if (!env.OPENROUTER_API_KEY || env.OPENROUTER_API_KEY === "placeholder") continue;
+		if (summary) break;
+		console.log("[summary.ts] Step 4: Calling OpenRouter model:", model);
+		try {
+			const orRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+				},
+				body: JSON.stringify({
+					model,
+					messages: [
+						{ role: "system", content: SUMMARY_SYSTEM_PROMPT },
+						{ role: "user", content: `Here is the meeting transcript:\n\n${transcriptText}` },
+					],
+				}),
+			});
+			console.log("[summary.ts] OpenRouter response status:", orRes.status, "for model:", model);
+			if (orRes.ok) {
+				const orJson = await orRes.json() as {
+					choices?: { message?: { content?: string } }[];
+				};
+				summary = orJson.choices?.[0]?.message?.content;
+				console.log("[summary.ts] OpenRouter summary received, length:", summary?.length || 0, "chars");
+				if (summary) {
+					console.log("[summary.ts] Summary preview (first 300 chars):", summary.slice(0, 300));
+					break;
+				}
+			} else {
+				const errText = await orRes.text();
+				console.log("[summary.ts] OpenRouter call failed for", model, ":", orRes.status, errText.slice(0, 200));
+			}
+		} catch (e) {
+			console.log("[summary.ts] OpenRouter call threw error for", model, ":", e instanceof Error ? e.message : String(e));
+		}
+	}
+
+	// 4b. Ollama fallback (if OpenRouter didn't produce a summary)
+	const ollamaModel = env.OLLAMA_MODEL || "gpt-oss:120b";
+	if (!summary && env.OLLAMA_BASE_URL && env.OLLAMA_API_KEY && env.OLLAMA_API_KEY !== "placeholder") {
+		console.log("[summary.ts] Step 4b: Falling back to Ollama Cloud at:", env.OLLAMA_BASE_URL, "model:", ollamaModel);
 		try {
 			const ollamaRes = await fetch(`${env.OLLAMA_BASE_URL}/api/chat`, {
 				method: "POST",
@@ -329,9 +488,6 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, env }) => {
 				};
 				summary = ollamaJson.message?.content;
 				console.log("[summary.ts] Ollama summary received, length:", summary?.length || 0, "chars");
-				if (summary) {
-					console.log("[summary.ts] Summary preview (first 300 chars):", summary.slice(0, 300));
-				}
 			} else {
 				const errText = await ollamaRes.text();
 				console.log("[summary.ts] Ollama call failed:", errText);
@@ -339,8 +495,8 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, env }) => {
 		} catch (e) {
 			console.log("[summary.ts] Ollama call threw error:", e instanceof Error ? e.message : String(e));
 		}
-	} else {
-		console.log("[summary.ts] Step 4: Ollama not configured (or placeholder key) — skipping");
+	} else if (!summary) {
+		console.log("[summary.ts] Step 4b: Ollama not configured (or placeholder key) — skipping");
 	}
 
 	// 5. Fallback: try Cloudflare's built-in summary if Ollama didn't produce one
@@ -371,6 +527,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, env }) => {
 		transcriptUrl,
 		recordingUrl,
 		audioRecordingUrl,
+		trackFiles: trackFiles.length > 0 ? trackFiles : undefined,
 		sessionId: session.id,
 		transcript_text: transcriptText,
 	});

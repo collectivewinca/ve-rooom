@@ -14,12 +14,13 @@ VE Rooom is a Google Meet–style video conferencing app where every meeting is 
 ## Features
 
 - Instant meetings (no signup required)
-- Automatic recording (MP4 + MP3)
-- AI transcription (Whisper Large v3 Turbo)
-- AI summary with action items (Ollama Cloud)
+- **Dual auto-recording** — composite (MP4 + MP3) + per-participant track (WebM audio)
+- AI transcription (3-source: CF transcript → Whisper on WebM tracks → Whisper on composite MP3)
+- AI summary with action items (OpenRouter free models → Ollama → CF built-in)
 - Google Sign-in (optional)
 - Dashboard with meeting history
 - 5+ participants supported
+- Recording indicator + download cards (CSV, transcript text, MP4, MP3, WebM)
 
 ## Tech
 
@@ -44,11 +45,14 @@ Open http://127.0.0.1:8787
 
 ## Docs
 
-- [Full README](README.md) — Setup, API reference, environment variables
-- [Architecture](docs/ARCHITECTURE.md) — System design, data flows, RealtimeKit API reference
-- [Contributing](CONTRIBUTING.md) — Development setup, code style, common issues
-- [Auth](docs/AUTH.md) — Google OAuth via PocketBase
-- [Internship Notes](docs/INTERNSHIP.md) — Project history, decisions, future work
+- [Full README](../README.md) — Setup, API reference, environment variables
+- [Architecture](ARCHITECTURE.md) — System design, data flows, dual recording pipeline, 3-source transcription
+- [Recordings](RECORDINGS.md) — Composite + track recording architecture, API schema, dedup logic
+- [Transcription](TRANSCRIPTION.md) — 3-source pipeline (CF transcript, Whisper WebM, Whisper MP3)
+- [Cloudflare RealtimeKit](CLOUDFLARE-REALTIMEKIT.md) — API reference, track recording layers/outputs schema
+- [Contributing](../CONTRIBUTING.md) — Development setup, code style, common issues
+- [Auth](AUTH.md) — Google OAuth via PocketBase
+- [Internship Notes](INTERNSHIP.md) — Project history, decisions, future work
 
 ## License
 

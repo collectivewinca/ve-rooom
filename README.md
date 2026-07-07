@@ -7,12 +7,15 @@ Video conferencing with AI-powered transcription and meeting summaries. Built on
 ## Features
 
 - **Instant meetings** — No signup required. Enter your name, click New Meeting, share the link.
-- **Auto-recording** — Every meeting is recorded automatically (MP4 video + MP3 audio).
-- **AI transcription** — Post-meeting transcription via Whisper Large v3 Turbo on Cloudflare Workers AI.
-- **AI summary** — Meeting summary with key decisions and action items (Ollama Cloud or Cloudflare built-in).
+- **Dual auto-recording** — Every meeting starts **both** composite (MP4 video + MP3 audio) **and** per-participant track recording (WebM audio) automatically 5s after join.
+- **Server-side dedup** — Multiple participants joining triggers only one composite + one track recording (dedup via `GET /recordings?meeting_id=` check).
+- **AI transcription** — 3-source pipeline: CF built-in transcript (primary) → Workers AI Whisper on per-participant WebM tracks (fallback A) → Workers AI Whisper on composite MP3 (fallback B).
+- **AI summary** — OpenRouter (free models, auto-routed) as primary, Ollama Cloud + CF built-in summary as fallbacks. 7-section Markdown format (Summary, Topics, Decisions, Action Items, Open Questions, Participants, Sentiment).
 - **Google Sign-in** — Optional Google auth via central PocketBase auth gateway.
 - **Dashboard** — View all past meetings with one-click access to summaries and downloads.
 - **5+ participants** — Powered by RealtimeKit SFU, scales natively.
+- **Recording indicator** — Red pulsing dot + status text shows when recording is active.
+- **Download cards** — Summary page shows download links for Transcript CSV, Full Transcript text, Recording MP4, Audio MP3, and per-participant WebM files.
 
 ## Tech Stack
 
@@ -23,7 +26,7 @@ Video conferencing with AI-powered transcription and meeting summaries. Built on
 | Backend | Cloudflare Pages Functions (Workers) |
 | Video/Media | Cloudflare RealtimeKit (managed SFU + recording + transcription) |
 | Auth | Google OAuth via PocketBase (`formsdb.exe.xyz`) |
-| Summary LLM | Ollama Cloud API (configurable, falls back to CF built-in) |
+| Summary LLM | OpenRouter (`openrouter/free` auto-router, free) → Ollama Cloud → CF built-in |
 | Deployment | Cloudflare Pages (GitHub-connected auto-deploy) |
 
 ## Quick Start
@@ -54,11 +57,14 @@ Fill in your values:
 
 ```sh
 CF_ACCOUNT_ID=your_cloudflare_account_id
-CF_API_TOKEN=your_cloudflare_api_token
+CF_API_TOKEN=your_cloudflare_api_token        # Needs: Realtime admin + Workers AI:Run
 RTK_APP_ID=your_realtimekit_app_id
-OLLAMA_API_KEY=your_ollama_cloud_key      # optional, use "placeholder" to skip
+OPENROUTER_API_KEY=your_openrouter_key         # Free models, auto-routed
+OPENROUTER_MODEL=openrouter/free
+OPENROUTER_FREE_MODEL=openrouter/free
+OLLAMA_API_KEY=your_ollama_cloud_key           # Fallback (use "placeholder" to skip)
 OLLAMA_BASE_URL=https://ollama.com
-OLLAMA_MODEL=llama3.1:8b
+OLLAMA_MODEL=gpt-oss:120b
 ```
 
 ### 3. Run Locally
@@ -83,6 +89,9 @@ Set production secrets:
 echo "your_value" | npx wrangler pages secret put CF_ACCOUNT_ID --project-name ve-rooom
 echo "your_value" | npx wrangler pages secret put CF_API_TOKEN --project-name ve-rooom
 echo "your_value" | npx wrangler pages secret put RTK_APP_ID --project-name ve-rooom
+echo "your_value" | npx wrangler pages secret put OPENROUTER_API_KEY --project-name ve-rooom
+echo "your_value" | npx wrangler pages secret put OPENROUTER_MODEL --project-name ve-rooom
+echo "your_value" | npx wrangler pages secret put OPENROUTER_FREE_MODEL --project-name ve-rooom
 echo "your_value" | npx wrangler pages secret put OLLAMA_API_KEY --project-name ve-rooom
 echo "your_value" | npx wrangler pages secret put OLLAMA_BASE_URL --project-name ve-rooom
 echo "your_value" | npx wrangler pages secret put OLLAMA_MODEL --project-name ve-rooom
@@ -94,33 +103,38 @@ echo "your_value" | npx wrangler pages secret put OLLAMA_MODEL --project-name ve
 ve-rooom/
 ├── functions/                      # Cloudflare Pages Functions (serverless API)
 │   └── api/
-│       ├── rooms.ts                 # POST → create meeting + host participant
+│       ├── rooms.ts                 # POST → create meeting (transcribe_on_end, summarize_on_end)
 │       ├── rooms/[id]/
 │       │   └── participants.ts      # POST → join existing room as participant
+│       ├── recordings/
+│       │   ├── start.ts             # POST → start composite recording (dedup + allow_multiple)
+│       │   └── track.ts             # POST → start track recording (per-participant WebM)
 │       ├── summary/
-│       │   └── [id].ts              # GET → fetch transcript, generate summary, return downloads
+│       │   └── [id].ts              # GET → 3-source transcript → OpenRouter → Ollama → CF summary
 │       └── meetings.ts             # GET → list all meetings for dashboard
 ├── src/
 │   ├── components/
 │   │   └── Layout.tsx               # Navbar with Google auth (sign-in/avatar/sign-out)
 │   ├── lib/
-│   │   ├── api.ts                   # Frontend fetch helpers + TypeScript types
+│   │   ├── api.ts                   # Frontend fetch helpers + types (trackFiles, recording start)
 │   │   ├── formsdb-auth.js          # Central Google auth via PocketBase (drop-in module)
 │   │   ├── formsdb-auth.d.ts        # TypeScript declarations for auth module
 │   │   └── useAuth.ts               # React hook for auth state
 │   ├── pages/
 │   │   ├── Home.tsx                 # Create/join meeting with tab toggle
-│   │   ├── Meeting.tsx              # RtkMeeting wrapper + copy link + summary link
-│   │   ├── Summary.tsx              # Polls for summary, renders Markdown, download links
+│   │   ├── Meeting.tsx              # RtkMeeting + 5s auto-start recordings + recording indicator
+│   │   ├── Summary.tsx              # Polls 5s, blur overlay, Markdown + download cards
 │   │   └── Dashboard.tsx            # Past meetings list with stats
 │   ├── App.tsx                      # Routes: /, /dashboard, /meeting/:roomId, /summary/:roomId
 │   ├── main.tsx                     # React entry point
 │   ├── index.css                    # Global resets + dark theme base
-│   └── pages.css                    # Full design system (golden gradient on black)
+│   └── pages.css                    # Full design system (golden gradient + recording indicator)
 ├── public/
-│   └── favicon.svg                  # Custom SVG icon (golden camera lens)
+│   ├── favicon.svg                  # Custom SVG icon (golden camera lens)
+│   └── jssa-amply-summary.md        # Sample After Meeting Report (MoM)
 ├── index.html                       # SPA shell with preconnect to auth hosts
 ├── wrangler.toml                    # Cloudflare Pages config
+├── vite.config.ts                   # Vite config with /api proxy to localhost:8788
 ├── .dev.vars.example               # Environment variable template
 └── package.json
 ```
@@ -131,7 +145,9 @@ ve-rooom/
 |---|---|---|
 | `POST` | `/api/rooms` | Create a new meeting + add host participant. Body: `{ name, roomTitle? }` → `{ roomId, authToken }` |
 | `POST` | `/api/rooms/:id/participants` | Join existing meeting. Body: `{ name }` → `{ authToken }` |
-| `GET` | `/api/summary/:id` | Fetch transcript + summary for a meeting. → `{ status, summary?, transcriptUrl?, recordingUrl?, audioRecordingUrl? }` |
+| `POST` | `/api/recordings/start` | Start composite recording (server-side dedup). Body: `{ meetingId, authToken }` → `{ recordingId, status }` |
+| `POST` | `/api/recordings/track` | Start track recording (per-participant WebM, server-side dedup). Body: `{ meetingId, authToken }` → `{ recordingId, status, type }` |
+| `GET` | `/api/summary/:id` | Fetch transcript + summary + recordings. → `{ status, summary?, transcriptUrl?, recordingUrl?, audioRecordingUrl?, trackFiles?, transcript_text? }` |
 | `GET` | `/api/meetings` | List all meetings. → `{ meetings: [...] }` |
 
 ### Summary Status Values
@@ -149,25 +165,29 @@ ve-rooom/
 ### Meeting Flow
 
 1. User enters name on Home page → clicks **New Meeting**
-2. `POST /api/rooms` creates a RealtimeKit meeting with `record_on_start`, `transcribe_on_end`, `summarize_on_end` enabled
+2. `POST /api/rooms` creates a RealtimeKit meeting with `transcribe_on_end`, `summarize_on_end` enabled
 3. Server adds the user as a participant with `group_call_host` preset → returns `authToken`
 4. Frontend navigates to `/meeting/:roomId?authToken=...`
 5. `useRealtimeKitClient` initializes the meeting → `<RtkMeeting>` renders the full video UI
-6. User clicks **Copy Join Link** to share `/?room=<roomId>` with others
+6. **5s after meeting ready**: frontend auto-starts composite + track recordings (`POST /api/recordings/start` + `POST /api/recordings/track`)
+7. Server-side dedup prevents duplicate recordings when multiple participants join
+8. Recording indicator (red pulsing dot) shows in UI
+9. User clicks **Copy Join Link** to share `/?room=<roomId>` with others
 
 ### Post-Meeting Flow
 
 1. After all participants leave, RealtimeKit ends the session
-2. Whisper Large v3 Turbo processes the audio → generates transcript (CSV in R2)
+2. CF's internal `transcribe_on_end` runs Whisper on the composite audio → generates transcript CSV in R2
 3. User visits `/summary/:roomId`
-4. `GET /api/summary/:id`:
-   - Fetches ended sessions via `/sessions?meeting_id=...`
-   - Downloads transcript from R2 presigned URL
-   - If transcript is empty → returns "no speech detected" summary
-   - Calls Ollama Cloud API with transcript (if configured)
-   - Falls back to Cloudflare built-in summary
-   - Fetches recording download URLs (MP4 + MP3)
-5. Frontend polls every 5s until summary is ready, then renders Markdown + download links
+4. `GET /api/summary/:id` executes a 3-source transcription pipeline:
+   - **Source 1 (primary):** Download CF transcript CSV → if non-empty, use it
+   - **Source 2 (fallback A):** If CF transcript empty → download per-participant WebM track files → run Workers AI Whisper (`@cf/openai/whisper-large-v3-turbo`) on each → merge with `[Participant {userId}]:` prefix
+   - **Source 3 (fallback B):** If no track files → download composite MP3 → run Workers AI Whisper
+5. Transcript → OpenRouter (`openrouter/free`) for 7-section Markdown summary
+6. If OpenRouter fails → Ollama Cloud fallback
+7. If Ollama fails → CF built-in summary
+8. Fetch all recording download URLs (MP4, MP3, per-participant WebM)
+9. Frontend polls every 5s (max 60 polls / 5 min), then renders Markdown + download cards
 
 ## Authentication
 
@@ -209,17 +229,23 @@ Edit `SUMMARY_SYSTEM_PROMPT` in `functions/api/summary/[id].ts` to customize the
 | Variable | Required | Description |
 |---|---|---|
 | `CF_ACCOUNT_ID` | Yes | Cloudflare account ID |
-| `CF_API_TOKEN` | Yes | Cloudflare API token with Realtime admin permissions |
+| `CF_API_TOKEN` | Yes | Cloudflare API token (needs Realtime admin **+ Workers AI:Run** scope) |
 | `RTK_APP_ID` | Yes | RealtimeKit app ID |
-| `OLLAMA_API_KEY` | No | Ollama Cloud API key (use `placeholder` to skip) |
+| `OPENROUTER_API_KEY` | Yes | OpenRouter API key (free models available) |
+| `OPENROUTER_MODEL` | No | Primary model (default: `openrouter/free`) |
+| `OPENROUTER_FREE_MODEL` | No | Fallback model (default: `openrouter/free`) |
+| `OLLAMA_API_KEY` | No | Ollama Cloud API key (fallback, use `placeholder` to skip) |
 | `OLLAMA_BASE_URL` | No | Ollama Cloud base URL (default: `https://ollama.com`) |
-| `OLLAMA_MODEL` | No | Ollama model name (default: `llama3.1:8b`) |
+| `OLLAMA_MODEL` | No | Ollama model name (default: `gpt-oss:120b`) |
 
 ## Limitations
 
 - **No meeting deletion** — The RealtimeKit REST API doesn't support deleting meetings, recordings, or sessions. Meetings can be set to `INACTIVE` to prevent joins. Recordings and sessions auto-expire from R2 after 7 days.
 - **Transcription is post-meeting only** — No live captions in the MVP.
 - **Summary depends on speech** — If nobody speaks during the meeting, the transcript is empty and no meaningful summary is generated.
+- **Workers AI 25MB limit** — Audio files larger than 25MB can't be transcribed via Workers AI Whisper. The summary page returns download links for manual transcription in this case.
+- **Track recording is audio-only** — Video track recording is in development per CF docs.
+- **Track files are time-aligned to meeting start** — Silence is preserved (not concatenated speech). Files may be shorter than the composite if a participant leaves early.
 
 ## Cost
 

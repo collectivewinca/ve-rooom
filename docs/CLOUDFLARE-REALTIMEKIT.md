@@ -7,7 +7,8 @@ Cloudflare RealtimeKit (RTK) is a managed, serverless platform for building real
 | Component | Managed by RealtimeKit |
 |---|---|
 | SFU (Selective Forwarding Unit) | Routes audio/video/screen-share between participants, scales to multiple participants |
-| Recording | Automatic composite MP4 video + separate MP3 audio, stored in Cloudflare R2 |
+| Composite Recording | Mixed MP4 video + separate MP3 audio, stored in Cloudflare R2 |
+| Track Recording | Per-participant WebM audio files (audio-only, video in development) |
 | Transcription | Batch via Whisper Large v3 Turbo (~46 Neurons/min); live via Deepgram Nova-3 WebSocket (~836 Neurons/min) |
 | Summary | Built-in AI summary engine (optional, can be overridden by external LLMs) |
 | Authentication | Per-participant scoped tokens with role-based presets |
@@ -65,7 +66,7 @@ Content-Type: application/json
 | Variable | Value |
 |---|---|
 | `CF_ACCOUNT_ID` | Cloudflare account UUID (e.g., `aa6789c67f992fd0b9f5933e86e11184`) |
-| `CF_API_TOKEN` | Cloudflare API token with RealtimeKit admin permissions |
+| `CF_API_TOKEN` | Cloudflare API token with **Realtime admin + Workers AI:Run** permissions |
 | `RTK_APP_ID` | RealtimeKit app UUID (e.g., `cbe3c6da-77fb-4c9c-95df-fa092896f8be`) |
 
 ### Endpoints Used
@@ -78,20 +79,16 @@ Called by `functions/api/rooms.ts` when a user clicks "New Meeting".
 // Request body
 {
   "title": "Weekly Standup",
-  "record_on_start": true,
+  "record_on_start": false,
   "transcribe_on_end": true,
   "summarize_on_end": true,
   "ai_config": {
-    "transcription": { "language": "en-US" },
+    "transcription": { "language": "en" },
     "summarization": {
       "summary_type": "general",
       "text_format": "markdown",
       "word_limit": 500
     }
-  },
-  "recording_config": {
-    "realtimekit_bucket_config": { "enabled": true },
-    "audio_config": { "codec": "MP3", "export_file": true }
   }
 }
 
@@ -103,10 +100,10 @@ Called by `functions/api/rooms.ts` when a user clicks "New Meeting".
 ```
 
 Key fields:
-- `record_on_start` — Recording begins automatically when the first participant joins
+- `record_on_start: false` — Recording is started manually 5s after join via `POST /recordings` + `POST /recordings/track` (enables server-side dedup)
 - `transcribe_on_end` — Whisper processes audio into a CSV transcript after the session ends
-- `summarize_on_end` — CF built-in summary (overridden by Ollama in this app, but setting it ensures a fallback exists)
-- `realtimekit_bucket_config.enabled` — Stores recording in RealtimeKit's managed R2 bucket
+- `summarize_on_end` — CF built-in summary (overridden by OpenRouter/Ollama, but setting it ensures a fallback exists)
+- `language: "en"` — NOT `"en-US"` (CF docs example uses `"en"`)
 
 #### POST `/meetings/{id}/participants` — Add a participant
 
@@ -191,10 +188,10 @@ Called when Ollama Cloud is not configured or fails. Returns CF's own summary.
 
 #### GET `/recordings?meeting_id={id}` — Get recording download URLs
 
-Called by `functions/api/summary/[id].ts` to provide downloadable MP4 and MP3 links on the Summary page.
+Called by `functions/api/summary/[id].ts` to provide downloadable MP4, MP3, and per-participant WebM links on the Summary page.
 
+**Composite recording response:**
 ```json
-// Response
 {
   "success": true,
   "data": [
@@ -202,11 +199,102 @@ Called by `functions/api/summary/[id].ts` to provide downloadable MP4 and MP3 li
       "meeting_id": "meeting-uuid",
       "download_url": "https://r2-bucket-url/recording.mp4?...",
       "audio_download_url": "https://r2-bucket-url/recording.mp3?...",
-      "status": "COMPLETE"
+      "status": "UPLOADED",
+      "output_file_name": "meetingId_timestamp.mp4",
+      "file_size": 20212537
     }
   ]
 }
 ```
+
+**Track recording response (different `download_url` shape):**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "meeting_id": "meeting-uuid",
+      "download_url": [
+        {
+          "layer_name": "default",
+          "download_urls": {
+            "participant_userId_peerId_..._audio_timestamp.webm": {
+              "download_url": "https://storage.googleapis.com/..."
+            }
+          }
+        }
+      ],
+      "status": "UPLOADED",
+      "output_file_name": "{{prefix}}_{{user_id}}_{{peer_id}}_..._audio_{{timestamp}}.webm",
+      "file_size": 0
+    }
+  ]
+}
+```
+
+**⚠️ The `type` field is always empty string in list response** — identify track recordings by `.webm` extension in `output_file_name` or by `Array.isArray(download_url)`.
+
+#### POST `/recordings` — Start composite recording
+
+Called by `functions/api/recordings/start.ts` 5s after meeting ready.
+
+```json
+// Request body
+{
+  "meeting_id": "meeting-uuid",
+  "allow_multiple_recordings": true,
+  "realtimekit_bucket_config": { "upload_prefix": "ve-rooom" },
+  "audio_config": { "codec": "MP3", "export_file": true }
+}
+
+// Response
+{
+  "success": true,
+  "data": {
+    "recording": {
+      "id": "recording-uuid",
+      "status": "RECORDING"
+    }
+  }
+}
+```
+
+#### POST `/recordings/track` — Start track recording (per-participant)
+
+Called by `functions/api/recordings/track.ts` 5s after meeting ready.
+
+```json
+// Request body
+{
+  "meeting_id": "meeting-uuid",
+  "layers": {
+    "default": {
+      "file_name_prefix": "participant",
+      "outputs": [
+        { "type": "REALTIMEKIT_BUCKET" }
+      ]
+    }
+  }
+}
+
+// Response (note: data.id, NOT data.recording.id)
+{
+  "success": true,
+  "data": {
+    "id": "recording-uuid",
+    "status": "INVOKED",
+    "output_file_name": "{{prefix}}_{{user_id}}_..._audio_{{timestamp}}.webm"
+  }
+}
+```
+
+**⚠️ Track recording API schema quirks** (docs say optional, API requires):
+1. `layers` is **required** (422 if omitted)
+2. `layers.default.outputs` is **required** (422 if omitted)
+3. `outputs` must be an **array** (422 if object)
+4. `outputs[0].type` is **required** — one of: `REALTIMEKIT_BUCKET`, `DYTE_BUCKET`, `STORAGE_CONFIG`, `RTMP_OUT`, `WEBSOCKET`
+5. `layers.default.media_kind` is **NOT allowed** (422 if included — track recording is audio-only by default)
+6. Response shape is `data.id`, not `data.recording.id` (unlike composite)
 
 #### GET `/meetings` — List all meetings
 
@@ -391,7 +479,10 @@ GET /api/summary/{roomId}  (polled every 5s up to 5 min)
 | GET | `/sessions?meeting_id={id}` | Find ended sessions for a meeting | `summary/[id].ts` |
 | GET | `/sessions/{id}/transcript` | Get transcript download URL | `summary/[id].ts` |
 | GET | `/sessions/{id}/summary` | Get CF built-in summary (fallback) | `summary/[id].ts` |
-| GET | `/recordings?meeting_id={id}` | Get MP4 + MP3 download URLs | `summary/[id].ts` |
+| GET | `/recordings?meeting_id={id}` | Get recording download URLs (composite + track) | `summary/[id].ts` |
+| POST | `/recordings` | Start composite recording (dedup + allow_multiple) | `recordings/start.ts` |
+| POST | `/recordings/track` | Start track recording (per-participant WebM) | `recordings/track.ts` |
+| PUT | `/recordings/{id}` | Stop/pause/resume recording | (not used yet) |
 
 ---
 
@@ -403,12 +494,15 @@ The RealtimeKit API uses inconsistent naming conventions. Notable fields:
 |---|---|---|
 | `transcript_download_url` | string | snake_case — NOT `downloadUrl` |
 | `transcript_download_url_expiry` | string | Expiration timestamp for the presigned URL |
-| `download_url` | string | Recording MP4 download URL |
-| `audio_download_url` | string | Recording MP3 audio-only URL |
+| `download_url` | string or array | Composite: string MP4 URL; Track: array of `{ layer_name, download_urls }` |
+| `audio_download_url` | string | Recording MP3 audio-only URL (composite only) |
 | `associated_id` | string | Meeting ID on session objects |
 | `custom_participant_id` | string | Required when adding participants (use UUID v4) |
 | `preset_name` | string | Uses underscores: `group_call_host`, `group_call_participant` |
 | `token` | string | Participant auth JWT (returned from add participant) |
+| `output_file_name` | string | Track: `{{prefix}}_{{user_id}}_..._audio_{{timestamp}}.webm`; Composite: `{meetingId}_{timestamp}.mp4` |
+| `type` | string | **Always empty in list response** — detect track by `.webm` extension or `Array.isArray(download_url)` |
+| `file_size` | number | Actual bytes for composite; always `0` for track (CF quirk) |
 
 ---
 
@@ -417,8 +511,13 @@ The RealtimeKit API uses inconsistent naming conventions. Notable fields:
 - **No DELETE endpoint** — Meetings, recordings, and sessions cannot be deleted via the REST API. Meetings can be set to `INACTIVE` to prevent new joins, but the resources persist.
 - **7-day auto-expiry** — Sessions, recordings, and transcripts auto-expire from R2 after 7 days. Presigned download URLs also expire.
 - **Post-meeting transcription only** — Whisper processes audio after the session ends. No real-time/live captions in the current MVP.
+- **Track recording is audio-only** — Video track recording is in development per CF docs.
+- **`type` field always empty** — The list recordings endpoint returns `type` as empty string, not `"TRACK"` or `"COMPOSITE"`. Must identify by `output_file_name` extension or `download_url` shape.
+- **Track `file_size` always 0** — Actual file size is in the storage bucket but not reflected in the API response.
+- **Workers AI 25MB limit** — Audio files larger than 25MB can't be transcribed via Workers AI Whisper.
 - **Transcription cost** — Whisper Large v3 Turbo costs ~47 Neurons per audio-minute. Real-time alternatives (e.g., Deepgram) cost ~836 Neurons/min (18x more).
 - **API field naming inconsistency** — Some endpoints use snake_case (`transcript_download_url`), others use camelCase (`download_url`, `audio_download_url`). The code handles both.
+- **Track recording docs vs reality** — Docs say `layers` is optional; API returns 422 if omitted. `layers.default.outputs` array with `type: "REALTIMEKIT_BUCKET"` is required.
 
 ---
 
@@ -427,7 +526,12 @@ The RealtimeKit API uses inconsistent naming conventions. Notable fields:
 | Decision | Why |
 |---|---|
 | RealtimeKit over raw WebRTC/SFU | Built-in recording, transcription, and summary reduced development from weeks to days |
+| Dual recording (composite + track) | Composite for video + mixed audio; track for per-participant audio (no diarization needed) |
+| `record_on_start: false` + manual 5s auto-start | Server-side dedup prevents N recordings from N participants |
+| `allow_multiple_recordings: true` | Allows composite + track to run concurrently |
+| Track dedup by `.webm` extension | `type` field is always empty in list response — can't filter by `type === "TRACK"` |
 | Token minting in Worker | The `CF_API_TOKEN` must never be exposed to the browser; the Worker is the trusted intermediary |
 | Poll-based summary retrieval | Simpler than setting up webhook infrastructure for the MVP — no public URL or event handling needed |
-| Ollama Cloud over CF built-in | Configurable model, better summary quality; falls back to CF built-in gracefully |
-| Setting `summarize_on_end` even with Ollama | Ensures CF built-in summary exists as a fallback if Ollama is not configured or fails |
+| OpenRouter as primary LLM | Free models, auto-routed, no rate limit issues with `openrouter/free` |
+| Ollama Cloud as fallback | Configurable model, better summary quality than CF built-in; falls back gracefully |
+| Setting `summarize_on_end` even with OpenRouter | Ensures CF built-in summary exists as a fallback if OpenRouter and Ollama both fail |

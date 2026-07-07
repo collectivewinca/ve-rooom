@@ -7,15 +7,37 @@ export interface JoinRoomResponse {
 	authToken: string;
 }
 
+export interface TrackFile {
+	filename: string;
+	downloadUrl: string;
+	userId: string;
+	peerId: string;
+}
+
 export interface SummaryResponse {
 	status: "ok" | "processing" | "no_ended_session" | "no_summary" | "error";
 	summary?: string;
 	transcriptUrl?: string;
 	recordingUrl?: string;
 	audioRecordingUrl?: string;
+	trackFiles?: TrackFile[];
 	sessionId?: string;
 	error?: string;
 	transcript_text?: string;
+}
+
+export interface RecordingStartResponse {
+	recordingId?: string;
+	status: string;
+	alreadyStarted?: boolean;
+	error?: string;
+}
+
+export interface RecordingStopResponse {
+	stopped: { id: string; status: string }[];
+	failed: { id: string; error: string }[];
+	stoppedCount: number;
+	failedCount: number;
 }
 
 function getAuthToken(): string | null {
@@ -83,5 +105,68 @@ export async function getSummary(roomId: string): Promise<SummaryResponse> {
 	}
 	const data = await res.json() as SummaryResponse;
 	console.log("[api.ts] getSummary result status:", data.status);
+	return data;
+}
+
+export async function startCompositeRecording(meetingId: string): Promise<RecordingStartResponse> {
+	console.log("[api.ts] startCompositeRecording — meetingId:", meetingId);
+	const authToken = getAuthToken();
+	if (!authToken) throw new Error("You must be signed in");
+
+	const res = await fetch("/api/recordings/start", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ meetingId, authToken }),
+	});
+	console.log("[api.ts] startCompositeRecording response status:", res.status);
+	if (!res.ok) {
+		const errText = await res.text();
+		console.log("[api.ts] startCompositeRecording failed:", errText);
+		throw new Error(`Failed to start composite recording: ${res.status}`);
+	}
+	const data = await res.json() as RecordingStartResponse;
+	console.log("[api.ts] startCompositeRecording result:", data);
+	return data;
+}
+
+export async function startTrackRecording(meetingId: string): Promise<RecordingStartResponse> {
+	console.log("[api.ts] startTrackRecording — meetingId:", meetingId);
+	const authToken = getAuthToken();
+	if (!authToken) throw new Error("You must be signed in");
+
+	const res = await fetch("/api/recordings/track", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ meetingId, authToken }),
+	});
+	console.log("[api.ts] startTrackRecording response status:", res.status);
+	if (!res.ok) {
+		const errText = await res.text();
+		console.log("[api.ts] startTrackRecording failed:", errText);
+		throw new Error(`Failed to start track recording: ${res.status}`);
+	}
+	const data = await res.json() as RecordingStartResponse;
+	console.log("[api.ts] startTrackRecording result:", data);
+	return data;
+}
+
+export async function stopAllRecordings(meetingId: string): Promise<RecordingStopResponse> {
+	console.log("[api.ts] stopAllRecordings — meetingId:", meetingId);
+	const authToken = getAuthToken();
+	if (!authToken) throw new Error("You must be signed in");
+
+	const res = await fetch("/api/recordings/stop", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ meetingId, authToken }),
+	});
+	console.log("[api.ts] stopAllRecordings response status:", res.status);
+	if (!res.ok) {
+		const errText = await res.text();
+		console.log("[api.ts] stopAllRecordings failed:", errText);
+		throw new Error(`Failed to stop recordings: ${res.status}`);
+	}
+	const data = await res.json() as RecordingStopResponse;
+	console.log("[api.ts] stopAllRecordings result:", data);
 	return data;
 }
