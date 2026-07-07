@@ -64,7 +64,7 @@ export default function Meeting() {
 function MeetingView({ roomId }: { roomId: string }) {
 	const { meeting } = useRealtimeKitMeeting();
 	const [copied, setCopied] = useState(false);
-	const [recordingStatus, setRecordingStatus] = useState<string>("");
+	const [isRecording, setIsRecording] = useState(false);
 	const [meetingEnded, setMeetingEnded] = useState(false);
 	const recordingsStarted = useRef(false);
 	const stopRequested = useRef(false);
@@ -82,30 +82,20 @@ function MeetingView({ roomId }: { roomId: string }) {
 			if (recordingsStarted.current) return;
 			recordingsStarted.current = true;
 			console.log("[MeetingView] roomJoined — starting recordings for meeting:", roomId);
-			setRecordingStatus("Starting records...");
+			setIsRecording(true);
 
 			try {
 				const composite = await startCompositeRecording(roomId);
 				console.log("[MeetingView] Composite recording:", composite);
-				if (composite.alreadyStarted) {
-					setRecordingStatus("Recording already active");
-				} else {
-					setRecordingStatus("Composite recording started");
-				}
 			} catch (e) {
 				console.log("[MeetingView] Composite recording failed:", e);
-				setRecordingStatus("Composite recording failed");
 			}
 
 			try {
 				const track = await startTrackRecording(roomId);
 				console.log("[MeetingView] Track recording:", track);
-				if (!track.alreadyStarted) {
-					setRecordingStatus("Recordings active (composite + track)");
-				}
 			} catch (e) {
 				console.log("[MeetingView] Track recording failed:", e);
-				setRecordingStatus("Track recording failed");
 			}
 		};
 
@@ -113,18 +103,12 @@ function MeetingView({ roomId }: { roomId: string }) {
 			if (stopRequested.current) return;
 			stopRequested.current = true;
 			console.log("[MeetingView] roomLeft — stopping recordings for meeting:", roomId);
-			setRecordingStatus("Stopping recordings...");
+			setIsRecording(false);
 			try {
 				const res = await stopAllRecordings(roomId);
 				console.log("[MeetingView] Stop result:", res);
-				if (res.failedCount > 0) {
-					setRecordingStatus(`Stopped ${res.stoppedCount} (failed ${res.failedCount})`);
-				} else {
-					setRecordingStatus(`Recordings stopped (${res.stoppedCount})`);
-				}
 			} catch (e) {
 				console.log("[MeetingView] Stop recordings failed:", e);
-				setRecordingStatus("Stop recordings failed");
 			}
 			setMeetingEnded(true);
 		};
@@ -166,10 +150,10 @@ function MeetingView({ roomId }: { roomId: string }) {
 				showSetupScreen={true}
 			/>
 			<div className="meeting-overlay-controls">
-				{recordingStatus && (
+				{isRecording && (
 					<div className="recording-indicator">
 						<span className="recording-dot" />
-						{recordingStatus}
+						Recording
 					</div>
 				)}
 				<button className="btn-share" onClick={handleCopyLink}>
