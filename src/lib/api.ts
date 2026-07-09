@@ -15,7 +15,7 @@ export interface TrackFile {
 }
 
 export interface SummaryResponse {
-	status: "ok" | "processing" | "no_ended_session" | "no_summary" | "error";
+	status: "ok" | "processing" | "no_ended_session" | "no_summary" | "error" | "needs_transcription";
 	summary?: string;
 	transcriptUrl?: string;
 	recordingUrl?: string;
@@ -24,6 +24,20 @@ export interface SummaryResponse {
 	sessionId?: string;
 	error?: string;
 	transcript_text?: string;
+	sessionInfo?: {
+		total_participants?: number;
+		recording_minutes?: number;
+		transcription_minutes?: number;
+		ended_at?: string;
+	};
+}
+
+export interface TranscribeResponse {
+	status: "ok" | "no_summary" | "no_speech" | "too_large" | "whisper_failed" | "error";
+	transcript?: string;
+	summary?: string;
+	message?: string;
+	sizeMb?: string;
 }
 
 export interface SessionRecording {
@@ -156,6 +170,24 @@ export async function fetchMeetings(): Promise<MeetingWithSessions[]> {
 	const data = await res.json() as MeetingsResponse;
 	console.log("[api.ts] fetchMeetings — got", data.meetings?.length || 0, "meetings");
 	return data.meetings || [];
+}
+
+export async function transcribeAudio(meetingId: string, audioUrl: string, trackFiles?: TrackFile[]): Promise<TranscribeResponse> {
+	console.log("[api.ts] transcribeAudio — meetingId:", meetingId, "audioUrl:", !!audioUrl, "tracks:", trackFiles?.length || 0);
+	const res = await fetch("/api/transcribe", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ meetingId, audioUrl, trackFiles }),
+	});
+	console.log("[api.ts] transcribeAudio response status:", res.status);
+	if (!res.ok) {
+		const errText = await res.text();
+		console.log("[api.ts] transcribeAudio failed:", errText);
+		throw new Error(`Transcribe failed: ${res.status}`);
+	}
+	const data = await res.json() as TranscribeResponse;
+	console.log("[api.ts] transcribeAudio result:", data.status, "transcript:", data.transcript?.length || 0, "chars");
+	return data;
 }
 
 export async function startCompositeRecording(meetingId: string): Promise<RecordingStartResponse> {

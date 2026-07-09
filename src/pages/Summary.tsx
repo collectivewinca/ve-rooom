@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
-import { getSummary, type SummaryResponse } from "../lib/api";
+import { getSummary, transcribeAudio, type SummaryResponse } from "../lib/api";
 
 export default function Summary() {
 	const { roomId } = useParams<{ roomId: string }>();
@@ -11,6 +11,8 @@ export default function Summary() {
 	const [error, setError] = useState("");
 	const [pollCount, setPollCount] = useState(0);
 	const [pollTimedOut, setPollTimedOut] = useState(false);
+	const [transcribing, setTranscribing] = useState(false);
+	const [transcribeStatus, setTranscribeStatus] = useState("");
 
 	console.log("[Summary] Render — roomId:", roomId, "status:", data?.status, "loading:", loading, "pollCount:", pollCount);
 
@@ -25,19 +27,25 @@ export default function Summary() {
 			try {
 				const res = await getSummary(roomId!);
 				if (cancelled) return;
-				console.log("[Summary] Poll result — status:", res.status, "hasTranscript:", !!res.transcriptUrl, "hasRecording:", !!res.recordingUrl);
+				console.log("[Summary] Poll result — status:", res.status);
 				setData(res);
+
 				if (res.status === "processing") {
 					if (pollCount + 1 >= MAX_POLLS) {
-						console.log("[Summary] Max polls reached — giving up");
 						setPollTimedOut(true);
 						setLoading(false);
 						return;
 					}
-					console.log("[Summary] Status is processing — will retry in 5s");
 					setTimeout(poll, 5000);
+				} else if (res.status === "needs_transcription") {
+					// CF transcript is empty — need to run Whisper on audio
+					// Stop polling, wait for user to click "Transcribe" button
+					setLoading(false);
+					if (!transcribing && res.audioRecordingUrl) {
+						// Auto-trigger transcription
+						triggerTranscription(res);
+					}
 				} else {
-					console.log("[Summary] Status is final — stopping poll");
 					setLoading(false);
 				}
 			} catch (e) {
@@ -52,10 +60,44 @@ export default function Summary() {
 		return () => {
 			cancelled = true;
 		};
+	// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [roomId]);
 
+	async function triggerTranscription(summaryData: SummaryResponse) {
+		if (!roomId || transcribing) return;
+		setTranscribing(true);
+		setTranscribeStatus("Downloading audio and running Whisper transcription...");
+		try {
+			const result = await transcribeAudio(roomId, summaryData.audioRecordingUrl || "", summaryData.trackFiles);
+			console.log("[Summary] Transcribe result:", result.status);
+			if (result.status === "ok" && result.summary) {
+				setTranscribeStatus("Summary generated!");
+				setData({
+					...summaryData,
+					status: "ok",
+					summary: result.summary,
+					transcript_text: result.transcript,
+				});
+			} else if (result.status === "too_large") {
+				setTranscribeStatus(result.message || "Audio too large for Workers AI (25MB limit). Download manually.");
+			} else if (result.status === "no_speech") {
+				setTranscribeStatus("No speech detected in the audio.");
+				setData({ ...summaryData, status: "ok", summary: "## Meeting Summary\n\nNo speech was detected in this meeting.\n\nDownload the recording below to verify." });
+			} else if (result.status === "whisper_failed") {
+				setTranscribeStatus(result.message || "Whisper transcription failed.");
+			} else {
+				setTranscribeStatus("Could not generate summary. Download the recording to transcribe manually.");
+			}
+		} catch (e) {
+			console.log("[Summary] Transcribe error:", e);
+			setTranscribeStatus("Transcription failed: " + (e instanceof Error ? e.message : String(e)));
+		} finally {
+			setTranscribing(false);
+		}
+	}
+
 	const hasDownloads = data?.transcriptUrl || data?.transcript_text || data?.recordingUrl || data?.audioRecordingUrl || (data?.trackFiles && data.trackFiles.length > 0);
-	const showSummary = data?.status === "ok" && !!data.summary;
+	const showSummary = (data?.status === "ok" && !!data.summary) || (data?.status === "needs_transcription" && !!data.summary);
 	const showBlur = data && data.status !== "no_ended_session" && data.status !== "error" && !showSummary;
 
 	return (
@@ -79,6 +121,13 @@ export default function Summary() {
 					<h3>No ended session yet</h3>
 					<p>This meeting hasn't ended or no session was found. Start a meeting, talk, then come back after it ends.</p>
 					<Link to="/" className="btn-outline" style={{ display: "inline-flex" }}>Go Home</Link>
+				</div>
+			)}
+
+			{transcribeStatus && (
+				<div className="transcribe-status">
+					{transcribing && <div className="spinner" style={{ width: 20, height: 20, display: "inline-block", marginRight: 8, border: "2px solid rgba(251,191,36,0.2)", borderTopColor: "var(--color-primary)", borderRadius: "50%", animation: "spin 0.8s linear infinite", verticalAlign: "middle" }} />}
+					{transcribeStatus}
 				</div>
 			)}
 
