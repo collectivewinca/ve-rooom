@@ -82,6 +82,23 @@ export default function Summary() {
 				</div>
 			)}
 
+			{data && data.status !== "ok" && data.status !== "no_ended_session" && (
+				<div className="summary-debug">
+					<h4>Summary Flow Status</h4>
+					<div className="debug-row"><span className="debug-label">API Status</span><span className="debug-value">{data.status}</span></div>
+					{data.sessionId && <div className="debug-row"><span className="debug-label">Session ID</span><span className="debug-value mono">{data.sessionId.slice(0, 12)}</span></div>}
+					{data.transcriptUrl && <div className="debug-row"><span className="debug-label">CF Transcript</span><span className="debug-value ok">URL found</span></div>}
+					{!data.transcriptUrl && <div className="debug-row"><span className="debug-label">CF Transcript</span><span className="debug-value warn">empty</span></div>}
+					{data.recordingUrl && <div className="debug-row"><span className="debug-label">Composite Recording</span><span className="debug-value ok">UPLOADED</span></div>}
+					{data.audioRecordingUrl && <div className="debug-row"><span className="debug-label">Audio MP3</span><span className="debug-value ok">available</span></div>}
+					{data.trackFiles && data.trackFiles.length > 0 && <div className="debug-row"><span className="debug-label">Track Files</span><span className="debug-value ok">{data.trackFiles.length} files</span></div>}
+					{!data.trackFiles && <div className="debug-row"><span className="debug-label">Track Files</span><span className="debug-value warn">none</span></div>}
+					{data.transcript_text && <div className="debug-row"><span className="debug-label">Transcript Text</span><span className="debug-value ok">{data.transcript_text.length} chars</span></div>}
+					{!data.transcript_text && <div className="debug-row"><span className="debug-label">Transcript Text</span><span className="debug-value warn">empty</span></div>}
+					{data.error && <div className="debug-row"><span className="debug-label">Error</span><span className="debug-value err">{data.error}</span></div>}
+				</div>
+			)}
+
 			{data?.status === "error" && (
 				<div className="error">{data.error || "Failed to load summary"}</div>
 			)}

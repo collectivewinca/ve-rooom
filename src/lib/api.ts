@@ -26,6 +26,42 @@ export interface SummaryResponse {
 	transcript_text?: string;
 }
 
+export interface SessionRecording {
+	id: string;
+	status: string;
+	type: "composite" | "track";
+	invoked_time?: string;
+	has_video: boolean;
+	has_audio: boolean;
+	has_track: boolean;
+}
+
+export interface MeetingSession {
+	id: string;
+	status: string;
+	recording_status?: string;
+	created_at?: string;
+	ended_at?: string;
+	participant_count?: number;
+	recordings: SessionRecording[];
+}
+
+export interface MeetingWithSessions {
+	id: string;
+	title?: string;
+	status?: string;
+	created_at: string;
+	updated_at: string;
+	record_on_start?: boolean;
+	transcribe_on_end?: boolean;
+	summarize_on_end?: boolean;
+	sessions: MeetingSession[];
+}
+
+export interface MeetingsResponse {
+	meetings: MeetingWithSessions[];
+}
+
 export interface RecordingStartResponse {
 	recordingId?: string;
 	status: string;
@@ -106,6 +142,20 @@ export async function getSummary(roomId: string): Promise<SummaryResponse> {
 	const data = await res.json() as SummaryResponse;
 	console.log("[api.ts] getSummary result status:", data.status);
 	return data;
+}
+
+export async function fetchMeetings(): Promise<MeetingWithSessions[]> {
+	console.log("[api.ts] fetchMeetings");
+	const res = await fetch("/api/meetings");
+	console.log("[api.ts] fetchMeetings response status:", res.status);
+	if (!res.ok) {
+		const errText = await res.text();
+		console.log("[api.ts] fetchMeetings failed:", errText);
+		throw new Error(`Failed to fetch meetings: ${res.status}`);
+	}
+	const data = await res.json() as MeetingsResponse;
+	console.log("[api.ts] fetchMeetings — got", data.meetings?.length || 0, "meetings");
+	return data.meetings || [];
 }
 
 export async function startCompositeRecording(meetingId: string): Promise<RecordingStartResponse> {

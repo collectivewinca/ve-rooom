@@ -51,7 +51,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 		transcribe_on_end: true,
 		summarize_on_end: true,
 		ai_config: {
-			transcription: { language: "en" },
+			transcription: { language: "en-US" },
 			summarization: {
 				summary_type: "general",
 				text_format: "markdown",
