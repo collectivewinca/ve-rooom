@@ -10,7 +10,7 @@ interface Env {
 	MEETING_CACHE: KVNamespace;
 }
 
-const SUMMARY_SYSTEM_PROMPT = `You are an expert meeting analyst and executive assistant. Your job is to analyze a meeting transcript and produce a comprehensive, well-structured Markdown summary.
+const SUMMARY_PROMPT = `You are an expert meeting analyst and executive assistant. Your job is to analyze a meeting transcript and produce a comprehensive, well-structured Markdown summary.
 
 Here is the format you MUST follow:
 
@@ -41,8 +41,22 @@ Rules:
 - Be thorough and detailed — this summary should be useful for someone who did NOT attend the meeting.
 - Use the actual words and names from the transcript. Do NOT invent information.
 - If the transcript is unclear or fragmented, do your best and note any gaps.
-- Keep it professional, clear, and skimmable with proper Markdown formatting.
-- Use timestamps from the transcript to reference when key moments occurred, if available.`;
+- Keep it professional, clear, and skimmable with proper Markdown formatting.`;
+
+function extractMeaningfulContent(text: string): string {
+	const lines = text.split("\n");
+	const seen = new Set<string>();
+	const deduped: string[] = [];
+	for (const line of lines) {
+		const trimmed = line.trim().toLowerCase().replace(/[^a-z0-9 ]/g, "").slice(0, 50);
+		if (!trimmed) continue;
+		const key = trimmed;
+		if (seen.has(key)) continue;
+		seen.add(key);
+		deduped.push(line);
+	}
+	return deduped.join("\n");
+}
 
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 	const body = await request.json() as { transcript: string; meetingId?: string };
@@ -52,13 +66,21 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 		return jsonResponse(400, { error: "transcript is required" });
 	}
 
-	// OpenRouter
-	const openrouterModels = [
+	let input = extractMeaningfulContent(body.transcript);
+	console.log("[generate-summary.ts] After dedup:", input.length, "chars");
+
+	const MAX_CHARS = 35000;
+	if (input.length > MAX_CHARS) {
+		input = input.slice(0, MAX_CHARS) + "\n\n[... transcript continued but abbreviated due to length ...]";
+		console.log("[generate-summary.ts] Truncated to", MAX_CHARS, "chars");
+	}
+
+	const models = [
 		env.OPENROUTER_MODEL || "openrouter/free",
 		env.OPENROUTER_FREE_MODEL || "openrouter/free",
 	].filter((m, i, arr) => arr.indexOf(m) === i);
 
-	for (const model of openrouterModels) {
+	for (const model of models) {
 		if (!env.OPENROUTER_API_KEY || env.OPENROUTER_API_KEY === "placeholder") continue;
 		console.log("[generate-summary.ts] Calling OpenRouter:", model);
 		try {
@@ -71,56 +93,43 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 				body: JSON.stringify({
 					model,
 					messages: [
-						{ role: "system", content: SUMMARY_SYSTEM_PROMPT },
-						{ role: "user", content: `Here is the meeting transcript:\n\n${body.transcript}` },
+						{ role: "system", content: SUMMARY_PROMPT },
+						{ role: "user", content: `Here is the meeting transcript:\n\n${input}` },
 					],
 				}),
 			});
 			if (orRes.ok) {
 				const oj = await orRes.json() as { choices?: { message?: { content?: string } }[] };
 				const summary = oj.choices?.[0]?.message?.content;
-				if (summary) {
+				if (summary && summary.length > 50) {
 					console.log("[generate-summary.ts] OpenRouter summary:", summary.length, "chars");
 					await saveCachedResult(env.MEETING_CACHE, body.meetingId || "", { transcript: body.transcript, summary, cachedAt: new Date().toISOString() });
 					return jsonResponse(200, { status: "ok", summary });
 				} else {
-					console.log("[generate-summary.ts] OpenRouter returned empty content, response:", JSON.stringify(oj).slice(0, 200));
+					console.log("[generate-summary.ts] OpenRouter returned short content:", JSON.stringify(oj).slice(0, 300));
 				}
 			} else {
 				const errBody = await orRes.text();
-				console.log("[generate-summary.ts] OpenRouter failed:", orRes.status, errBody.slice(0, 200));
-				return jsonResponse(200, { status: "no_summary", message: `OpenRouter returned ${orRes.status}: ${errBody.slice(0, 200)}` });
+				console.log("[generate-summary.ts] OpenRouter failed:", orRes.status, errBody.slice(0, 300));
 			}
 		} catch (e) {
 			console.log("[generate-summary.ts] OpenRouter error:", e);
-			return jsonResponse(200, { status: "no_summary", message: `OpenRouter error: ${e instanceof Error ? e.message : String(e)}` });
 		}
 	}
 
-	// Ollama fallback
 	if (env.OLLAMA_BASE_URL && env.OLLAMA_API_KEY && env.OLLAMA_API_KEY !== "placeholder") {
 		const ollamaModel = env.OLLAMA_MODEL || "gpt-oss:120b";
 		console.log("[generate-summary.ts] Falling back to Ollama:", ollamaModel);
 		try {
 			const ollamaRes = await fetch(`${env.OLLAMA_BASE_URL}/api/chat`, {
 				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Authorization: `Bearer ${env.OLLAMA_API_KEY}`,
-				},
-				body: JSON.stringify({
-					model: ollamaModel,
-					stream: false,
-					messages: [
-						{ role: "system", content: SUMMARY_SYSTEM_PROMPT },
-						{ role: "user", content: `Here is the meeting transcript:\n\n${body.transcript}` },
-					],
-				}),
+				headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.OLLAMA_API_KEY}` },
+				body: JSON.stringify({ model: ollamaModel, stream: false, messages: [{ role: "system", content: SUMMARY_PROMPT }, { role: "user", content: `Here is the meeting transcript:\n\n${input}` }] }),
 			});
 			if (ollamaRes.ok) {
 				const oj = await ollamaRes.json() as { message?: { content?: string } };
 				const summary = oj.message?.content;
-				if (summary) {
+				if (summary && summary.length > 50) {
 					console.log("[generate-summary.ts] Ollama summary:", summary.length, "chars");
 					await saveCachedResult(env.MEETING_CACHE, body.meetingId || "", { transcript: body.transcript, summary, cachedAt: new Date().toISOString() });
 					return jsonResponse(200, { status: "ok", summary });

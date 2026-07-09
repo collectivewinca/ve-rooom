@@ -9,7 +9,20 @@ interface Env {
 
 const RTK_BASE = "https://api.cloudflare.com/client/v4/accounts";
 
-const CHUNK_SIZE = 20 * 1024 * 1024; // 20MB per chunk (safely under 25MB limit)
+const CHUNK_SIZE = 20 * 1024 * 1024;
+
+async function getAudioSize(url: string): Promise<number> {
+	const probeRes = await fetch(url, { headers: { Range: "bytes=0-0" } });
+	if (probeRes.status === 206) {
+		const cr = probeRes.headers.get("content-range");
+		if (cr) {
+			const match = cr.match(/\/(\d+)$/);
+			if (match) return parseInt(match[1]);
+		}
+	}
+	const cl = probeRes.headers.get("content-length");
+	return cl ? parseInt(cl) : 0;
+}
 
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 	const body = await request.json() as { meetingId: string; audioUrl: string; trackFiles?: { filename: string; downloadUrl: string; userId: string; peerId: string }[] };
@@ -25,24 +38,24 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 
 	let transcriptText = "";
 
-	// Try track files first (per-participant)
 	if (body.trackFiles && body.trackFiles.length > 0) {
 		console.log("[transcribe.ts] Trying Whisper on", body.trackFiles.length, "track files");
 		const participantTranscripts: string[] = [];
 
 		for (const track of body.trackFiles) {
 			try {
-				const audioRes = await fetch(track.downloadUrl);
-				if (!audioRes.ok) continue;
-
-				const cl = audioRes.headers.get("content-length");
-				const sizeMb = cl ? parseInt(cl) / (1024 * 1024) : 0;
+				const trackSize = await getAudioSize(track.downloadUrl);
+				const sizeMb = trackSize / (1024 * 1024);
 				console.log("[transcribe.ts] Track", track.userId, "size:", sizeMb.toFixed(1), "MB");
 				if (sizeMb > 25) {
 					console.log("[transcribe.ts] Track too large, skipping");
 					continue;
 				}
 
+				const audioRes = await fetch(track.downloadUrl, {
+					headers: { Range: `bytes=0-${trackSize - 1}` },
+				});
+				if (!audioRes.ok) continue;
 				const audioBuffer = await audioRes.arrayBuffer();
 				const whisperRes = await fetch(
 					`${RTK_BASE}/${env.CF_ACCOUNT_ID}/ai/run/@cf/openai/whisper`,
@@ -74,83 +87,64 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 		}
 	}
 
-	// If no track transcript, try composite audio
 	if (transcriptText.trim().length === 0 && body.audioUrl) {
 		console.log("[transcribe.ts] Trying Whisper on composite MP3");
 		try {
-			// First, get the Content-Length via a HEAD request
-			const headRes = await fetch(body.audioUrl, { method: "HEAD" });
-			const totalSize = parseInt(headRes.headers.get("content-length") || "0");
+			const totalSize = await getAudioSize(body.audioUrl);
 			const sizeMb = totalSize / (1024 * 1024);
 			console.log("[transcribe.ts] Composite size:", sizeMb.toFixed(1), "MB");
 
 			if (totalSize === 0) {
-				// Fallback: download the whole thing
-				const audioRes = await fetch(body.audioUrl);
-				if (!audioRes.ok) {
-					return jsonResponse(200, { status: "error", error: "Failed to download audio" });
-				}
-				const audioBuffer = await audioRes.arrayBuffer();
-				const chunkText = await transcribeChunk(env, authHeaders, audioBuffer, "full");
-				if (chunkText) transcriptText = chunkText;
-			} else if (sizeMb <= 25) {
-				// Small enough — single Whisper call
-				console.log("[transcribe.ts] Single chunk (", sizeMb.toFixed(1), "MB)");
-				const audioRes = await fetch(body.audioUrl);
-				if (!audioRes.ok) {
-					return jsonResponse(200, { status: "error", error: "Failed to download audio" });
-				}
-				const audioBuffer = await audioRes.arrayBuffer();
-				const chunkText = await transcribeChunk(env, authHeaders, audioBuffer, "full");
-				if (chunkText) transcriptText = chunkText;
-			} else {
-				// Large file — split into chunks using HTTP Range
-				const numChunks = Math.ceil(totalSize / CHUNK_SIZE);
-				console.log("[transcribe.ts] Splitting into", numChunks, "chunks of", CHUNK_SIZE / (1024 * 1024), "MB each");
+				return jsonResponse(200, { status: "error", error: "Could not determine audio file size" });
+			}
 
-				const chunkTranscripts: string[] = [];
+			const numChunks = Math.ceil(totalSize / CHUNK_SIZE);
+			console.log("[transcribe.ts] Will fetch", numChunks, "chunks of", CHUNK_SIZE / (1024 * 1024), "MB each");
 
-				for (let i = 0; i < numChunks; i++) {
-					const start = i * CHUNK_SIZE;
-					const end = Math.min(start + CHUNK_SIZE - 1, totalSize - 1);
-					const chunkMb = (end - start + 1) / (1024 * 1024);
-					console.log(`[transcribe.ts] Chunk ${i + 1}/${numChunks} — bytes ${start}-${end} (${chunkMb.toFixed(1)} MB)`);
+			const chunkTranscripts: string[] = [];
+			let chunksDone = 0;
 
-					try {
-						const chunkRes = await fetch(body.audioUrl, {
-							headers: { Range: `bytes=${start}-${end}` },
-						});
+			for (let i = 0; i < numChunks; i++) {
+				const start = i * CHUNK_SIZE;
+				const end = Math.min(start + CHUNK_SIZE - 1, totalSize - 1);
+				const chunkMb = (end - start + 1) / (1024 * 1024);
+				console.log(`[transcribe.ts] Chunk ${i + 1}/${numChunks} — bytes ${start}-${end} (${chunkMb.toFixed(1)} MB)`);
 
-						if (!chunkRes.ok) {
-							console.log(`[transcribe.ts] Chunk ${i + 1} download failed:`, chunkRes.status);
-							continue;
-						}
-
-						const chunkBuffer = await chunkRes.arrayBuffer();
-						const chunkText = await transcribeChunk(env, authHeaders, chunkBuffer, `chunk ${i + 1}/${numChunks}`);
-
-						if (chunkText) {
-							chunkTranscripts.push(chunkText);
-							console.log(`[transcribe.ts] Chunk ${i + 1} transcript:`, chunkText.length, "chars");
-						} else {
-							console.log(`[transcribe.ts] Chunk ${i + 1} produced no transcript`);
-						}
-					} catch (e) {
-						console.log(`[transcribe.ts] Chunk ${i + 1} error:`, e instanceof Error ? e.message : String(e));
-					}
-				}
-
-				if (chunkTranscripts.length > 0) {
-					transcriptText = chunkTranscripts.join("\n\n");
-					console.log("[transcribe.ts] Merged", chunkTranscripts.length, "chunk transcripts, total:", transcriptText.length, "chars");
-				} else {
-					console.log("[transcribe.ts] All chunks failed — returning too_large");
-					return jsonResponse(200, {
-						status: "too_large",
-						sizeMb: sizeMb.toFixed(1),
-						message: `Audio file is ${sizeMb.toFixed(1)} MB. Chunked transcription failed — download the audio recording below and transcribe it manually.`,
+				try {
+					const chunkRes = await fetch(body.audioUrl, {
+						headers: { Range: `bytes=${start}-${end}` },
 					});
+
+					if (!chunkRes.ok) {
+						console.log(`[transcribe.ts] Chunk ${i + 1} download failed:`, chunkRes.status);
+						continue;
+					}
+
+					const chunkBuffer = await chunkRes.arrayBuffer();
+					const chunkText = await transcribeChunk(env, authHeaders, chunkBuffer, `chunk ${i + 1}/${numChunks}`);
+
+					if (chunkText) {
+						chunkTranscripts.push(chunkText);
+						console.log(`[transcribe.ts] Chunk ${i + 1} transcript:`, chunkText.length, "chars");
+					} else {
+						console.log(`[transcribe.ts] Chunk ${i + 1} produced no transcript`);
+					}
+					chunksDone++;
+				} catch (e) {
+					console.log(`[transcribe.ts] Chunk ${i + 1} error:`, e instanceof Error ? e.message : String(e));
 				}
+			}
+
+			if (chunkTranscripts.length > 0) {
+				transcriptText = chunkTranscripts.join("\n\n");
+				console.log("[transcribe.ts] Merged", chunkTranscripts.length, "/", chunksDone, "chunk transcripts, total:", transcriptText.length, "chars");
+			} else {
+				console.log("[transcribe.ts] All chunks failed — returning too_large");
+				return jsonResponse(200, {
+					status: "too_large",
+					sizeMb: sizeMb.toFixed(1),
+					message: `Audio file is ${sizeMb.toFixed(1)} MB (${numChunks} chunks). Chunked transcription failed — download the audio recording below and transcribe it manually.`,
+				});
 			}
 		} catch (e) {
 			console.log("[transcribe.ts] Composite error:", e instanceof Error ? e.message : String(e));
@@ -162,7 +156,8 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 		return jsonResponse(200, { status: "no_speech", message: "No speech detected in any audio source." });
 	}
 
-	// Cache the transcript in KV so it persists across browser sessions
+	transcriptText = dedupeTranscript(transcriptText);
+
 	const cached = await getCachedResult(env.MEETING_CACHE, body.meetingId);
 
 	console.log("[transcribe.ts] Done — transcript:", transcriptText.length, "chars, cached summary:", cached?.summary?.length || 0, "chars");
@@ -190,7 +185,6 @@ async function transcribeChunk(env: Env, authHeaders: Record<string, string>, au
 			console.log(`[transcribe.ts] Whisper ${label}:`, wt?.length || 0, "chars");
 
 			if (wt && wt.length > 0) {
-				// Hallucination check
 				const fp = wt.split(".")[0];
 				if (fp && fp.length < 30) {
 					const pc = (wt.match(new RegExp(fp.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\.?", "g")) || []).length;
@@ -209,6 +203,32 @@ async function transcribeChunk(env: Env, authHeaders: Record<string, string>, au
 		console.log(`[transcribe.ts] Whisper ${label} error:`, e instanceof Error ? e.message : String(e));
 	}
 	return undefined;
+}
+
+function dedupeTranscript(text: string): string {
+	const lines = text.split("\n");
+	const seen = new Set<string>();
+	const out: string[] = [];
+	let consecutiveDupes = 0;
+	for (const line of lines) {
+		const trimmed = line.trim();
+		if (!trimmed) {
+			out.push(line);
+			continue;
+		}
+		const key = trimmed.toLowerCase().replace(/[^a-z0-9 ]/g, "").slice(0, 60);
+		if (seen.has(key)) {
+			consecutiveDupes++;
+			if (consecutiveDupes > 2) continue;
+		} else {
+			consecutiveDupes = 0;
+		}
+		seen.add(key);
+		out.push(line);
+	}
+	const result = out.join("\n");
+	console.log("[transcribe.ts] Dedupe: removed", text.length - result.length, "chars of repetition");
+	return result;
 }
 
 function jsonResponse(status: number, body: unknown): Response {
