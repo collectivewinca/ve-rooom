@@ -166,78 +166,17 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 		return jsonResponse(200, { status: "no_speech", message: "No speech detected in any audio source." });
 	}
 
-	// Now generate summary with OpenRouter
-	let summary: string | undefined;
-	const openrouterModels = [
-		env.OPENROUTER_MODEL || "openrouter/free",
-		env.OPENROUTER_FREE_MODEL || "openrouter/free",
-	].filter((m, i, arr) => arr.indexOf(m) === i);
-
-	for (const model of openrouterModels) {
-		if (!env.OPENROUTER_API_KEY || env.OPENROUTER_API_KEY === "placeholder") continue;
-		if (summary) break;
-		console.log("[transcribe.ts] Calling OpenRouter:", model);
-		try {
-			const orRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
-				},
-				body: JSON.stringify({
-					model,
-					messages: [
-						{ role: "system", content: SUMMARY_SYSTEM_PROMPT },
-						{ role: "user", content: `Here is the meeting transcript:\n\n${transcriptText}` },
-					],
-				}),
-			});
-			if (orRes.ok) {
-				const oj = await orRes.json() as { choices?: { message?: { content?: string } }[] };
-				summary = oj.choices?.[0]?.message?.content;
-				if (summary) break;
-			}
-		} catch (e) {
-			console.log("[transcribe.ts] OpenRouter error:", e instanceof Error ? e.message : String(e));
-		}
-	}
-
-	// Ollama fallback
-	if (!summary && env.OLLAMA_BASE_URL && env.OLLAMA_API_KEY && env.OLLAMA_API_KEY !== "placeholder") {
-		const ollamaModel = env.OLLAMA_MODEL || "gpt-oss:120b";
-		console.log("[transcribe.ts] Falling back to Ollama:", ollamaModel);
-		try {
-			const ollamaRes = await fetch(`${env.OLLAMA_BASE_URL}/api/chat`, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Authorization: `Bearer ${env.OLLAMA_API_KEY}`,
-				},
-				body: JSON.stringify({
-					model: ollamaModel,
-					stream: false,
-					messages: [
-						{ role: "system", content: SUMMARY_SYSTEM_PROMPT },
-						{ role: "user", content: `Here is the meeting transcript:\n\n${transcriptText}` },
-					],
-				}),
-			});
-			if (ollamaRes.ok) {
-				const oj = await ollamaRes.json() as { message?: { content?: string } };
-				summary = oj.message?.content;
-			}
-		} catch (e) {
-			console.log("[transcribe.ts] Ollama error:", e instanceof Error ? e.message : String(e));
-		}
-	}
-
-	console.log("[transcribe.ts] Done — transcript:", transcriptText.length, "chars, summary:", summary?.length || 0, "chars");
-
+	// Return transcript immediately — frontend will call /api/generate-summary separately
+	console.log("[transcribe.ts] Done — transcript:", transcriptText.length, "chars");
 	return jsonResponse(200, {
-		status: summary ? "ok" : "no_summary",
+		status: "transcribed",
 		transcript: transcriptText,
-		summary,
 	});
+};
+
+export const onRequestPut: PagesFunction<Env> = async ({ request, env }) => {
+	// Re-transcribe with existing data (not used, but needed for Pages Functions routing)
+	return jsonResponse(200, { status: "ok" });
 };
 
 function jsonResponse(status: number, body: unknown): Response {

@@ -33,11 +33,16 @@ export interface SummaryResponse {
 }
 
 export interface TranscribeResponse {
-	status: "ok" | "no_summary" | "no_speech" | "too_large" | "whisper_failed" | "error";
+	status: "transcribed" | "no_speech" | "too_large" | "whisper_failed" | "error";
 	transcript?: string;
-	summary?: string;
 	message?: string;
 	sizeMb?: string;
+}
+
+export interface GenerateSummaryResponse {
+	status: "ok" | "no_summary";
+	summary?: string;
+	message?: string;
 }
 
 export interface SessionRecording {
@@ -187,6 +192,24 @@ export async function transcribeAudio(meetingId: string, audioUrl: string, track
 	}
 	const data = await res.json() as TranscribeResponse;
 	console.log("[api.ts] transcribeAudio result:", data.status, "transcript:", data.transcript?.length || 0, "chars");
+	return data;
+}
+
+export async function generateSummaryFromTranscript(transcript: string): Promise<GenerateSummaryResponse> {
+	console.log("[api.ts] generateSummaryFromTranscript — transcript:", transcript.length, "chars");
+	const res = await fetch("/api/generate-summary", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ transcript }),
+	});
+	console.log("[api.ts] generateSummary response status:", res.status);
+	if (!res.ok) {
+		const errText = await res.text();
+		console.log("[api.ts] generateSummary failed:", errText);
+		throw new Error(`Generate summary failed: ${res.status}`);
+	}
+	const data = await res.json() as GenerateSummaryResponse;
+	console.log("[api.ts] generateSummary result:", data.status, "summary:", data.summary?.length || 0, "chars");
 	return data;
 }
 

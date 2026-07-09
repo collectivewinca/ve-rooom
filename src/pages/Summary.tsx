@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
-import { getSummary, transcribeAudio, type SummaryResponse } from "../lib/api";
+import { getSummary, transcribeAudio, generateSummaryFromTranscript, type SummaryResponse } from "../lib/api";
 
 export default function Summary() {
 	const { roomId } = useParams<{ roomId: string }>();
@@ -70,14 +70,32 @@ export default function Summary() {
 		try {
 			const result = await transcribeAudio(roomId, summaryData.audioRecordingUrl || "", summaryData.trackFiles);
 			console.log("[Summary] Transcribe result:", result.status);
-			if (result.status === "ok" && result.summary) {
-				setTranscribeStatus("Summary generated!");
-				setData({
-					...summaryData,
-					status: "ok",
-					summary: result.summary,
-					transcript_text: result.transcript,
-				});
+
+			if (result.status === "transcribed" && result.transcript) {
+				setTranscribeStatus("Transcript ready! Generating AI summary...");
+				setData({ ...summaryData, transcript_text: result.transcript });
+
+				// Step 2: Generate summary from transcript
+				const summaryResult = await generateSummaryFromTranscript(result.transcript);
+				console.log("[Summary] Generate summary result:", summaryResult.status);
+
+				if (summaryResult.status === "ok" && summaryResult.summary) {
+					setTranscribeStatus("Summary generated!");
+					setData({
+						...summaryData,
+						status: "ok",
+						summary: summaryResult.summary,
+						transcript_text: result.transcript,
+					});
+				} else {
+					setTranscribeStatus("Transcript ready but summary generation failed. You can read the transcript below.");
+					setData({
+						...summaryData,
+						status: "ok",
+						summary: "## Meeting Summary\n\nAI summary generation failed, but the transcript is available below.\n\nDownload the full transcript to read the meeting content.",
+						transcript_text: result.transcript,
+					});
+				}
 			} else if (result.status === "too_large") {
 				setTranscribeStatus(result.message || "Audio too large for Workers AI (25MB limit). Download manually.");
 			} else if (result.status === "no_speech") {
@@ -86,7 +104,7 @@ export default function Summary() {
 			} else if (result.status === "whisper_failed") {
 				setTranscribeStatus(result.message || "Whisper transcription failed.");
 			} else {
-				setTranscribeStatus("Could not generate summary. Download the recording to transcribe manually.");
+				setTranscribeStatus("Transcription failed. Download the recording to transcribe manually.");
 			}
 		} catch (e) {
 			console.log("[Summary] Transcribe error:", e);
