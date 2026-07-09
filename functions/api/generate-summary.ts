@@ -79,12 +79,17 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 				if (summary) {
 					console.log("[generate-summary.ts] OpenRouter summary:", summary.length, "chars");
 					return jsonResponse(200, { status: "ok", summary });
+				} else {
+					console.log("[generate-summary.ts] OpenRouter returned empty content, response:", JSON.stringify(oj).slice(0, 200));
 				}
 			} else {
-				console.log("[generate-summary.ts] OpenRouter failed:", orRes.status);
+				const errBody = await orRes.text();
+				console.log("[generate-summary.ts] OpenRouter failed:", orRes.status, errBody.slice(0, 200));
+				return jsonResponse(200, { status: "no_summary", message: `OpenRouter returned ${orRes.status}: ${errBody.slice(0, 200)}` });
 			}
 		} catch (e) {
 			console.log("[generate-summary.ts] OpenRouter error:", e);
+			return jsonResponse(200, { status: "no_summary", message: `OpenRouter error: ${e instanceof Error ? e.message : String(e)}` });
 		}
 	}
 
