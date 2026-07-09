@@ -10,71 +10,49 @@ interface Env {
 	MEETING_CACHE: KVNamespace;
 }
 
-const SUMMARY_PROMPT = `You are an expert meeting analyst and executive assistant. Your job is to analyze a meeting transcript and produce a comprehensive, well-structured Markdown summary.
+const MAX_CHARS = 60000;
 
-Here is the format you MUST follow:
+const PROMPT = `You are an expert meeting analyst and executive assistant. Analyze a meeting transcript and produce a comprehensive Markdown summary.
 
 ## Meeting Summary
-Write a detailed overview paragraph (4-8 sentences) explaining what the meeting was about, its purpose, the overall tone, and the main themes discussed. Include who was present if identifiable from the transcript.
+Detailed overview paragraph (4-8 sentences): meeting purpose, tone, main themes, who was present.
 
 ## Key Topics Discussed
-List every distinct topic that was discussed during the meeting. For each topic, write 2-4 sentences explaining what was said about it. Use bullet points. Be specific — reference actual points, numbers, or details mentioned.
+Bullet points — each topic with 2-4 sentences of specifics.
 
 ## Decisions Made
-List every decision that was reached during the meeting. Each decision should be a bullet point with the decision in **bold** followed by a brief explanation of the rationale. If no formal decisions were made, note that.
+Bullet points — **decision** followed by rationale.
 
 ## Action Items
-Extract every action item, task, or follow-up mentioned. Format as a checklist:
-- [ ] **Owner Name** — Task description (deadline if mentioned)
-If an owner is not identifiable, use **Unassigned**. Include any deadlines or timelines mentioned.
+- [ ] **Owner Name** — Task description (deadline)
 
 ## Open Questions
-List any questions that were raised but not resolved during the meeting. Format as bullet points. If none, note "No open questions."
+Bullet points. If none, write "No open questions."
 
 ## Participants
-List the participants who spoke during the meeting (identifiable from the transcript). If you can tell from the transcript, note who seemed to be leading the meeting.
+Who spoke and who seemed to lead.
 
 ## Sentiment & Engagement
-Provide a brief assessment (2-3 sentences) of the meeting's energy, engagement level, and any notable dynamics (e.g., disagreements, enthusiasm, confusion, urgency).
+2-3 sentences on energy, engagement, dynamics.
 
-Rules:
-- Be thorough and detailed — this summary should be useful for someone who did NOT attend the meeting.
-- Use the actual words and names from the transcript. Do NOT invent information.
-- If the transcript is unclear or fragmented, do your best and note any gaps.
-- Keep it professional, clear, and skimmable with proper Markdown formatting.`;
+Rules: Be thorough. Use actual names/words. Don't invent. Note gaps if unclear. Professional Markdown.`;
 
-function extractMeaningfulContent(text: string): string {
+function dedupe(text: string): string {
 	const lines = text.split("\n");
 	const seen = new Set<string>();
-	const deduped: string[] = [];
+	const out: string[] = [];
 	for (const line of lines) {
 		const trimmed = line.trim().toLowerCase().replace(/[^a-z0-9 ]/g, "").slice(0, 50);
 		if (!trimmed) continue;
 		const key = trimmed;
 		if (seen.has(key)) continue;
 		seen.add(key);
-		deduped.push(line);
+		out.push(line);
 	}
-	return deduped.join("\n");
+	return out.join("\n");
 }
 
-export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
-	const body = await request.json() as { transcript: string; meetingId?: string };
-	console.log("[generate-summary.ts] POST — transcript length:", body.transcript?.length || 0, "meetingId:", body.meetingId);
-
-	if (!body.transcript || body.transcript.trim().length === 0) {
-		return jsonResponse(400, { error: "transcript is required" });
-	}
-
-	let input = extractMeaningfulContent(body.transcript);
-	console.log("[generate-summary.ts] After dedup:", input.length, "chars");
-
-	const MAX_CHARS = 35000;
-	if (input.length > MAX_CHARS) {
-		input = input.slice(0, MAX_CHARS) + "\n\n[... transcript continued but abbreviated due to length ...]";
-		console.log("[generate-summary.ts] Truncated to", MAX_CHARS, "chars");
-	}
-
+async function callLm(env: Env, content: string): Promise<string | null> {
 	const models = [
 		env.OPENROUTER_MODEL || "openrouter/free",
 		env.OPENROUTER_FREE_MODEL || "openrouter/free",
@@ -82,65 +60,64 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 
 	for (const model of models) {
 		if (!env.OPENROUTER_API_KEY || env.OPENROUTER_API_KEY === "placeholder") continue;
-		console.log("[generate-summary.ts] Calling OpenRouter:", model);
 		try {
-			const orRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+			const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
 				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
-				},
-				body: JSON.stringify({
-					model,
-					messages: [
-						{ role: "system", content: SUMMARY_PROMPT },
-						{ role: "user", content: `Here is the meeting transcript:\n\n${input}` },
-					],
-				}),
+				headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.OPENROUTER_API_KEY}` },
+				body: JSON.stringify({ model, messages: [{ role: "system", content: PROMPT }, { role: "user", content }] }),
 			});
-			if (orRes.ok) {
-				const oj = await orRes.json() as { choices?: { message?: { content?: string } }[] };
-				const summary = oj.choices?.[0]?.message?.content;
-				if (summary && summary.length > 50) {
-					console.log("[generate-summary.ts] OpenRouter summary:", summary.length, "chars");
-					await saveCachedResult(env.MEETING_CACHE, body.meetingId || "", { transcript: body.transcript, summary, cachedAt: new Date().toISOString() });
-					return jsonResponse(200, { status: "ok", summary });
-				} else {
-					console.log("[generate-summary.ts] OpenRouter returned short content:", JSON.stringify(oj).slice(0, 300));
-				}
+			if (res.ok) {
+				const oj = await res.json() as { choices?: { message?: { content?: string } }[] };
+				const c = oj.choices?.[0]?.message?.content;
+				if (c && c.length > 50) return c;
 			} else {
-				const errBody = await orRes.text();
-				console.log("[generate-summary.ts] OpenRouter failed:", orRes.status, errBody.slice(0, 300));
+				const err = await res.text();
+				console.log(`[gs] OR ${res.status}: ${err.slice(0, 200)}`);
 			}
 		} catch (e) {
-			console.log("[generate-summary.ts] OpenRouter error:", e);
+			console.log(`[gs] OR error: ${e instanceof Error ? e.message : String(e)}`);
 		}
 	}
 
 	if (env.OLLAMA_BASE_URL && env.OLLAMA_API_KEY && env.OLLAMA_API_KEY !== "placeholder") {
-		const ollamaModel = env.OLLAMA_MODEL || "gpt-oss:120b";
-		console.log("[generate-summary.ts] Falling back to Ollama:", ollamaModel);
+		const model = env.OLLAMA_MODEL || "gpt-oss:120b";
 		try {
-			const ollamaRes = await fetch(`${env.OLLAMA_BASE_URL}/api/chat`, {
+			const res = await fetch(`${env.OLLAMA_BASE_URL}/api/chat`, {
 				method: "POST",
 				headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.OLLAMA_API_KEY}` },
-				body: JSON.stringify({ model: ollamaModel, stream: false, messages: [{ role: "system", content: SUMMARY_PROMPT }, { role: "user", content: `Here is the meeting transcript:\n\n${input}` }] }),
+				body: JSON.stringify({ model, stream: false, messages: [{ role: "system", content: PROMPT }, { role: "user", content }] }),
 			});
-			if (ollamaRes.ok) {
-				const oj = await ollamaRes.json() as { message?: { content?: string } };
-				const summary = oj.message?.content;
-				if (summary && summary.length > 50) {
-					console.log("[generate-summary.ts] Ollama summary:", summary.length, "chars");
-					await saveCachedResult(env.MEETING_CACHE, body.meetingId || "", { transcript: body.transcript, summary, cachedAt: new Date().toISOString() });
-					return jsonResponse(200, { status: "ok", summary });
-				}
+			if (res.ok) {
+				const oj = await res.json() as { message?: { content?: string } };
+				const c = oj.message?.content;
+				if (c && c.length > 50) return c;
 			}
 		} catch (e) {
-			console.log("[generate-summary.ts] Ollama error:", e);
+			console.log("[gs] Ollama error:", e instanceof Error ? e.message : String(e));
 		}
 	}
+	return null;
+}
 
-	return jsonResponse(200, { status: "no_summary", message: "Could not generate summary with any LLM provider." });
+export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
+	const body = await request.json() as { transcript: string; meetingId?: string };
+	console.log("[gs] POST — length:", body.transcript?.length || 0, "meetingId:", body.meetingId);
+
+	if (!body.transcript || body.transcript.trim().length === 0) {
+		return jsonResponse(400, { error: "transcript is required" });
+	}
+
+	let input = dedupe(body.transcript);
+	if (input.length > MAX_CHARS) {
+		input = input.slice(0, MAX_CHARS) + "\n\n[...]";
+	}
+
+	const summary = await callLm(env, `Here is the meeting transcript:\n\n${input}`);
+	if (summary) {
+		await saveCachedResult(env.MEETING_CACHE, body.meetingId || "", { transcript: body.transcript, summary, cachedAt: new Date().toISOString() });
+		return jsonResponse(200, { status: "ok", summary });
+	}
+	return jsonResponse(200, { status: "no_summary", message: "Could not generate summary." });
 };
 
 function jsonResponse(status: number, body: unknown): Response {
