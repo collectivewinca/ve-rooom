@@ -1,7 +1,10 @@
+import { getCachedResult } from "../lib/kv";
+
 interface Env {
 	CF_ACCOUNT_ID: string;
 	CF_API_TOKEN: string;
 	RTK_APP_ID: string;
+	MEETING_CACHE: KVNamespace;
 }
 
 const RTK_BASE = "https://api.cloudflare.com/client/v4/accounts";
@@ -159,10 +162,14 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 		return jsonResponse(200, { status: "no_speech", message: "No speech detected in any audio source." });
 	}
 
-	console.log("[transcribe.ts] Done — transcript:", transcriptText.length, "chars");
+	// Cache the transcript in KV so it persists across browser sessions
+	const cached = await getCachedResult(env.MEETING_CACHE, body.meetingId);
+
+	console.log("[transcribe.ts] Done — transcript:", transcriptText.length, "chars, cached summary:", cached?.summary?.length || 0, "chars");
 	return jsonResponse(200, {
-		status: "transcribed",
+		status: cached?.summary ? "ok" : "transcribed",
 		transcript: transcriptText,
+		summary: cached?.summary,
 	});
 };
 

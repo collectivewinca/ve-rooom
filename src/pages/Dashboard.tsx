@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { fetchMeetings, type MeetingWithSessions, type MeetingSession } from "../lib/api";
+import { fetchMeetings, type MeetingWithSessions, type MeetingSession, type MeetingParticipant } from "../lib/api";
 
 function formatDate(dateStr?: string): string {
 	if (!dateStr) return "—";
@@ -145,34 +145,49 @@ export default function Dashboard() {
 						const hasEndedSession = m.sessions.some((s) => s.status === "ENDED");
 						const isLive = m.status === "ACTIVE";
 
-						return (
-							<div key={m.id} className={`meeting-card ${isExpanded ? "expanded" : ""}`}>
-								<div className="meeting-card-header" onClick={() => toggleExpand(m.id)}>
-									<div className="meeting-card-info">
-										<div className="meeting-card-title-row">
-											<h3>{m.title || "Untitled Meeting"}</h3>
-											<span className={`meeting-status-badge ${isLive ? "active" : "ended"}`}>
-												{isLive ? "● Active" : "Ended"}
-											</span>
-										</div>
-										<div className="meeting-card-meta">
-											<span className="meta-date">{formatDate(m.created_at)}</span>
-											<span className="meta-sep">·</span>
-											<span className="meta-id">{m.id.slice(0, 8)}</span>
-											{sessionCount > 0 && (
-												<>
-													<span className="meta-sep">·</span>
-													<span className="meta-sessions">{sessionCount} session{sessionCount !== 1 ? "s" : ""}</span>
-												</>
-											)}
-											{recordingCount > 0 && (
-												<>
-													<span className="meta-sep">·</span>
-													<span className="meta-recordings">{recordingCount} recording{recordingCount !== 1 ? "s" : ""}</span>
-												</>
-											)}
-										</div>
+					return (
+						<div key={m.id} className={`meeting-card ${isExpanded ? "expanded" : ""}`}>
+							<div className="meeting-card-header" onClick={() => toggleExpand(m.id)}>
+								<div className="meeting-card-info">
+									<div className="meeting-card-title-row">
+										<h3>{m.title || "Untitled Meeting"}</h3>
+										<span className={`meeting-status-badge ${isLive ? "active" : "ended"}`}>
+											{isLive ? "● Active" : "Ended"}
+										</span>
+										{m.hasCachedSummary && (
+											<span className="cache-badge" title="Summary cached in KV">✓ Cached</span>
+										)}
 									</div>
+									<div className="meeting-card-meta">
+										<span className="meta-date">{formatDate(m.created_at)}</span>
+										<span className="meta-sep">·</span>
+										<span className="meta-id">{m.id.slice(0, 8)}</span>
+										{m.createdBy && (
+											<>
+												<span className="meta-sep">·</span>
+												<span className="meta-creator" title={m.createdBy.email}>by {m.createdBy.name}</span>
+											</>
+										)}
+										{sessionCount > 0 && (
+											<>
+												<span className="meta-sep">·</span>
+												<span className="meta-sessions">{sessionCount} session{sessionCount !== 1 ? "s" : ""}</span>
+											</>
+										)}
+										{recordingCount > 0 && (
+											<>
+												<span className="meta-sep">·</span>
+												<span className="meta-recordings">{recordingCount} recording{recordingCount !== 1 ? "s" : ""}</span>
+											</>
+										)}
+										{m.participants && m.participants.length > 0 && (
+											<>
+												<span className="meta-sep">·</span>
+												<span className="meta-participants">{m.participants.length} participant{m.participants.length !== 1 ? "s" : ""}</span>
+											</>
+										)}
+									</div>
+								</div>
 									<div className="meeting-card-actions" onClick={(e) => e.stopPropagation()}>
 										{hasEndedSession && (
 											<Link to={`/summary/${m.id}`} className="btn-link">
@@ -193,9 +208,30 @@ export default function Dashboard() {
 									</div>
 								</div>
 
-								{isExpanded && (
-									<div className="meeting-card-body">
-										{m.sessions.length === 0 ? (
+							{isExpanded && (
+								<div className="meeting-card-body">
+									{m.createdBy && (
+										<div className="meeting-creator">
+											<span className="creator-label">Created by</span>
+											<span className="creator-name">{m.createdBy.name}</span>
+											<span className="creator-email">{m.createdBy.email}</span>
+										</div>
+									)}
+
+									{m.participants && m.participants.length > 0 && (
+										<div className="meeting-participants">
+											<span className="participants-label">Participants</span>
+											<div className="participant-chips">
+												{m.participants.map((p, i) => (
+													<span key={i} className="participant-chip" title={p.email}>
+														{p.name}
+													</span>
+												))}
+											</div>
+										</div>
+									)}
+
+									{m.sessions.length === 0 ? (
 											<div className="no-sessions">
 												<p>No sessions yet. {isLive ? "Meeting is live — join and talk to create a session." : "Meeting has not been joined yet."}</p>
 											</div>

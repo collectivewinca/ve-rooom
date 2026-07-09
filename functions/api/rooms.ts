@@ -1,4 +1,5 @@
 import { verifyAuthToken } from "../auth";
+import { saveMeetingMeta, addUserMeeting } from "../lib/kv";
 
 interface Env {
 	CF_ACCOUNT_ID: string;
@@ -7,6 +8,7 @@ interface Env {
 	OLLAMA_API_KEY: string;
 	OLLAMA_BASE_URL: string;
 	FORMSDB_URL?: string;
+	MEETING_CACHE: KVNamespace;
 }
 
 const RTK_BASE = "https://api.cloudflare.com/client/v4/accounts";
@@ -107,6 +109,16 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 	};
 
 	console.log("[rooms.ts] Participant added, token received (truncated):", participantJson.data.token?.slice(0, 30) + "...");
+
+	// Save meeting meta to KV
+	const title = body.roomTitle?.trim() || "VE-Call";
+	await saveMeetingMeta(env.MEETING_CACHE, meetingId, {
+		createdBy: { email: user.email, name: user.name },
+		title,
+		createdAt: new Date().toISOString(),
+	});
+	await addUserMeeting(env.MEETING_CACHE, user.email, meetingId);
+
 	console.log("[rooms.ts] Done — returning roomId + authToken");
 
 	return jsonResponse(200, {

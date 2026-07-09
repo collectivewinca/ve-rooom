@@ -1,0 +1,105 @@
+export interface MeetingMeta {
+	createdBy: { email: string; name: string };
+	title: string;
+	createdAt: string;
+}
+
+export interface ParticipantRecord {
+	email: string;
+	name: string;
+	joinedAt: string;
+}
+
+export interface CachedResult {
+	transcript: string;
+	summary: string;
+	cachedAt: string;
+}
+
+export async function saveMeetingMeta(kv: KVNamespace, meetingId: string, meta: MeetingMeta): Promise<void> {
+	try {
+		await kv.put(`meeting:${meetingId}:meta`, JSON.stringify(meta));
+		console.log("[kv] Saved meeting meta for", meetingId);
+	} catch (e) {
+		console.log("[kv] Save meta error:", e);
+	}
+}
+
+export async function getMeetingMeta(kv: KVNamespace, meetingId: string): Promise<MeetingMeta | null> {
+	try {
+		const raw = await kv.get(`meeting:${meetingId}:meta`);
+		if (!raw) return null;
+		return JSON.parse(raw) as MeetingMeta;
+	} catch {
+		return null;
+	}
+}
+
+export async function addParticipant(kv: KVNamespace, meetingId: string, participant: ParticipantRecord): Promise<void> {
+	try {
+		const key = `meeting:${meetingId}:participants`;
+		const existing = await kv.get(key);
+		const list: ParticipantRecord[] = existing ? JSON.parse(existing) : [];
+		// Don't add duplicate emails
+		if (!list.some((p) => p.email === participant.email)) {
+			list.push(participant);
+			await kv.put(key, JSON.stringify(list));
+			console.log("[kv] Added participant", participant.email, "to meeting", meetingId);
+		}
+	} catch (e) {
+		console.log("[kv] Add participant error:", e);
+	}
+}
+
+export async function getParticipants(kv: KVNamespace, meetingId: string): Promise<ParticipantRecord[]> {
+	try {
+		const raw = await kv.get(`meeting:${meetingId}:participants`);
+		if (!raw) return [];
+		return JSON.parse(raw) as ParticipantRecord[];
+	} catch {
+		return [];
+	}
+}
+
+export async function saveCachedResult(kv: KVNamespace, meetingId: string, result: CachedResult): Promise<void> {
+	try {
+		await kv.put(`meeting:${meetingId}:result`, JSON.stringify(result));
+		console.log("[kv] Cached result for meeting", meetingId);
+	} catch (e) {
+		console.log("[kv] Save result error:", e);
+	}
+}
+
+export async function getCachedResult(kv: KVNamespace, meetingId: string): Promise<CachedResult | null> {
+	try {
+		const raw = await kv.get(`meeting:${meetingId}:result`);
+		if (!raw) return null;
+		return JSON.parse(raw) as CachedResult;
+	} catch {
+		return null;
+	}
+}
+
+export async function addUserMeeting(kv: KVNamespace, email: string, meetingId: string): Promise<void> {
+	try {
+		const key = `user:${email}:meetings`;
+		const existing = await kv.get(key);
+		const list: string[] = existing ? JSON.parse(existing) : [];
+		if (!list.includes(meetingId)) {
+			list.push(meetingId);
+			await kv.put(key, JSON.stringify(list));
+		}
+	} catch (e) {
+		console.log("[kv] Add user meeting error:", e);
+	}
+}
+
+export async function getUserMeetings(kv: KVNamespace, email: string): Promise<string[]> {
+	try {
+		const raw = await kv.get(`user:${email}:meetings`);
+		if (!raw) return [];
+		return JSON.parse(raw) as string[];
+	} catch {
+		return [];
+	}
+}

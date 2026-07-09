@@ -1,3 +1,5 @@
+import { getCachedResult, getMeetingMeta, getParticipants } from "../../lib/kv";
+
 interface Env {
 	CF_ACCOUNT_ID: string;
 	CF_API_TOKEN: string;
@@ -8,6 +10,7 @@ interface Env {
 	OLLAMA_API_KEY: string;
 	OLLAMA_BASE_URL: string;
 	OLLAMA_MODEL?: string;
+	MEETING_CACHE: KVNamespace;
 }
 
 const RTK_BASE = "https://api.cloudflare.com/client/v4/accounts";
@@ -83,6 +86,74 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, env }) => {
 	if (!session) {
 		return jsonResponse(200, { status: "no_ended_session" });
 	}
+
+	// 1.5. Check KV cache — if we already have a transcript + summary, return immediately
+	const cached = await getCachedResult(env.MEETING_CACHE, meetingId);
+	if (cached && cached.summary && cached.transcript) {
+		console.log("[summary.ts] KV cache hit — returning cached result, summary:", cached.summary.length, "chars");
+
+		// Fetch transcript URL + recording URLs for download cards (in parallel)
+		const [transcriptUrlRes, recRes] = await Promise.all([
+			fetch(`${RTK_BASE}/${env.CF_ACCOUNT_ID}/realtime/kit/${env.RTK_APP_ID}/sessions/${session.id}/transcript`, { headers: authHeaders }).catch(() => null),
+			fetch(`${RTK_BASE}/${env.CF_ACCOUNT_ID}/realtime/kit/${env.RTK_APP_ID}/recordings?meeting_id=${meetingId}`, { headers: authHeaders }).catch(() => null),
+		]);
+
+		let cachedTranscriptUrl: string | undefined;
+		if (transcriptUrlRes && transcriptUrlRes.ok) {
+			const tj = await transcriptUrlRes.json() as { data?: { transcript_download_url?: string; downloadUrl?: string } };
+			cachedTranscriptUrl = tj.data?.transcript_download_url || tj.data?.downloadUrl;
+		}
+
+		let recordingUrl: string | undefined;
+		let audioRecordingUrl: string | undefined;
+		let trackFiles: { filename: string; downloadUrl: string; userId: string; peerId: string }[] = [];
+		if (recRes && recRes.ok) {
+			try {
+				const recJson = await recRes.json() as { success: boolean; data?: { meeting_id: string; session_id?: string; download_url: unknown; audio_download_url?: string; status: string; output_file_name?: string }[] };
+				const sessionRecordings = (recJson.data || []).filter((r) => r.meeting_id === meetingId && r.session_id === session.id);
+				for (const rec of sessionRecordings) {
+					if (rec.status !== "UPLOADED") continue;
+					const isTrack = (rec.output_file_name || "").includes(".webm") || typeof rec.download_url !== "string";
+					if (isTrack) {
+						let trackLayers: { layer_name?: string; download_urls?: Record<string, { download_url?: string }> }[] = [];
+						const du = rec.download_url as Record<string, unknown>;
+						if (Array.isArray(du)) trackLayers = du;
+						else if (du && typeof du === "object" && Array.isArray(du.links)) trackLayers = du.links as typeof trackLayers;
+						else if (du && typeof du === "object") trackLayers = [du] as unknown as typeof trackLayers;
+						for (const layer of trackLayers) {
+							for (const [filename, info] of Object.entries(layer.download_urls || {})) {
+								const parts = filename.replace(/\.webm$/, "").split("_");
+								trackFiles.push({ filename, downloadUrl: info.download_url || "", userId: parts[1] || "unknown", peerId: parts[2] || "unknown" });
+							}
+						}
+					} else {
+						if (typeof rec.download_url === "string") recordingUrl = rec.download_url;
+						if (rec.audio_download_url) audioRecordingUrl = rec.audio_download_url;
+					}
+				}
+			} catch (e) {
+				console.log("[summary.ts] Cache hit but recording parse error:", e);
+			}
+		}
+
+		const meta = await getMeetingMeta(env.MEETING_CACHE, meetingId);
+		const participants = await getParticipants(env.MEETING_CACHE, meetingId);
+
+		return jsonResponse(200, {
+			status: "ok",
+			summary: cached.summary,
+			transcriptUrl: cachedTranscriptUrl,
+			recordingUrl,
+			audioRecordingUrl,
+			trackFiles: trackFiles.length > 0 ? trackFiles : undefined,
+			sessionId: session.id,
+			transcript_text: cached.transcript,
+			cachedAt: cached.cachedAt,
+			meetingMeta: meta || undefined,
+			participants: participants.length > 0 ? participants : undefined,
+		});
+	}
+	console.log("[summary.ts] No KV cache — proceeding with full flow");
 
 	// 2. Fetch transcript URL (fast — just the URL, don't download yet)
 	let transcriptUrl: string | undefined;

@@ -1,3 +1,5 @@
+import { saveCachedResult } from "../lib/kv";
+
 interface Env {
 	OPENROUTER_API_KEY: string;
 	OPENROUTER_MODEL?: string;
@@ -5,6 +7,7 @@ interface Env {
 	OLLAMA_API_KEY: string;
 	OLLAMA_BASE_URL: string;
 	OLLAMA_MODEL?: string;
+	MEETING_CACHE: KVNamespace;
 }
 
 const SUMMARY_SYSTEM_PROMPT = `You are an expert meeting analyst and executive assistant. Your job is to analyze a meeting transcript and produce a comprehensive, well-structured Markdown summary.
@@ -42,8 +45,8 @@ Rules:
 - Use timestamps from the transcript to reference when key moments occurred, if available.`;
 
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
-	const body = await request.json() as { transcript: string };
-	console.log("[generate-summary.ts] POST — transcript length:", body.transcript?.length || 0);
+	const body = await request.json() as { transcript: string; meetingId?: string };
+	console.log("[generate-summary.ts] POST — transcript length:", body.transcript?.length || 0, "meetingId:", body.meetingId);
 
 	if (!body.transcript || body.transcript.trim().length === 0) {
 		return jsonResponse(400, { error: "transcript is required" });
@@ -78,6 +81,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 				const summary = oj.choices?.[0]?.message?.content;
 				if (summary) {
 					console.log("[generate-summary.ts] OpenRouter summary:", summary.length, "chars");
+					await saveCachedResult(env.MEETING_CACHE, body.meetingId || "", { transcript: body.transcript, summary, cachedAt: new Date().toISOString() });
 					return jsonResponse(200, { status: "ok", summary });
 				} else {
 					console.log("[generate-summary.ts] OpenRouter returned empty content, response:", JSON.stringify(oj).slice(0, 200));
@@ -118,6 +122,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 				const summary = oj.message?.content;
 				if (summary) {
 					console.log("[generate-summary.ts] Ollama summary:", summary.length, "chars");
+					await saveCachedResult(env.MEETING_CACHE, body.meetingId || "", { transcript: body.transcript, summary, cachedAt: new Date().toISOString() });
 					return jsonResponse(200, { status: "ok", summary });
 				}
 			}

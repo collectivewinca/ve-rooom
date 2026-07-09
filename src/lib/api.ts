@@ -30,6 +30,9 @@ export interface SummaryResponse {
 		transcription_minutes?: number;
 		ended_at?: string;
 	};
+	cachedAt?: string;
+	meetingMeta?: { createdBy: { email: string; name: string }; title: string; createdAt: string };
+	participants?: MeetingParticipant[];
 }
 
 export interface TranscribeResponse {
@@ -68,6 +71,12 @@ export interface MeetingSession {
 	recordings: SessionRecording[];
 }
 
+export interface MeetingParticipant {
+	email: string;
+	name: string;
+	joinedAt: string;
+}
+
 export interface MeetingWithSessions {
 	id: string;
 	title?: string;
@@ -78,6 +87,9 @@ export interface MeetingWithSessions {
 	transcribe_on_end?: boolean;
 	summarize_on_end?: boolean;
 	sessions: MeetingSession[];
+	createdBy?: { email: string; name: string };
+	participants?: MeetingParticipant[];
+	hasCachedSummary?: boolean;
 }
 
 export interface MeetingsResponse {

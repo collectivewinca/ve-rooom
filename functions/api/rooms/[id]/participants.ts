@@ -1,4 +1,5 @@
 import { verifyAuthToken } from "../../../auth";
+import { addParticipant, addUserMeeting } from "../../../lib/kv";
 
 interface Env {
 	CF_ACCOUNT_ID: string;
@@ -7,6 +8,7 @@ interface Env {
 	OLLAMA_API_KEY: string;
 	OLLAMA_BASE_URL: string;
 	FORMSDB_URL?: string;
+	MEETING_CACHE: KVNamespace;
 }
 
 const RTK_BASE = "https://api.cloudflare.com/client/v4/accounts";
@@ -64,6 +66,15 @@ export const onRequestPost: PagesFunction<Env> = async ({ params, request, env }
 	};
 
 	console.log("[participants.ts] Participant added, token received (truncated):", json.data.token?.slice(0, 30) + "...");
+
+	// Save participant record to KV
+	await addParticipant(env.MEETING_CACHE, roomId, {
+		email: user.email,
+		name: user.name,
+		joinedAt: new Date().toISOString(),
+	});
+	await addUserMeeting(env.MEETING_CACHE, user.email, roomId);
+
 	console.log("[participants.ts] Done — returning authToken");
 
 	return jsonResponse(200, { authToken: json.data.token });

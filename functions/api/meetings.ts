@@ -1,7 +1,10 @@
+import { getMeetingMeta, getParticipants, type ParticipantRecord } from "../lib/kv";
+
 interface Env {
 	CF_ACCOUNT_ID: string;
 	CF_API_TOKEN: string;
 	RTK_APP_ID: string;
+	MEETING_CACHE: KVNamespace;
 }
 
 const RTK_BASE = "https://api.cloudflare.com/client/v4/accounts";
@@ -64,6 +67,9 @@ interface MeetingWithSessions extends RTKMeeting {
 			has_track: boolean;
 		}[];
 	}[];
+	createdBy?: { email: string; name: string };
+	participants?: ParticipantRecord[];
+	hasCachedSummary?: boolean;
 }
 
 export const onRequestGet: PagesFunction<Env> = async ({ env }) => {
@@ -146,6 +152,22 @@ export const onRequestGet: PagesFunction<Env> = async ({ env }) => {
 	}
 	console.log("[meetings.ts] Sessions loaded for", Object.keys(sessionsByMeeting).length, "meetings");
 
+	// Fetch KV data for all meetings in parallel
+	const kvResults = await Promise.all(
+		meetings.map(async (m) => {
+			const [meta, participants, cached] = await Promise.all([
+				getMeetingMeta(env.MEETING_CACHE, m.id).catch(() => null),
+				getParticipants(env.MEETING_CACHE, m.id).catch(() => []),
+				env.MEETING_CACHE.get(`meeting:${m.id}:result`).catch(() => null),
+			]);
+			return { meetingId: m.id, meta, participants, hasCache: !!cached };
+		})
+	);
+	const kvByMeeting: Record<string, { meta: ReturnType<typeof getMeetingMeta> extends Promise<infer T> ? T : never; participants: ParticipantRecord[]; hasCache: boolean }> = {};
+	for (const kv of kvResults) {
+		kvByMeeting[kv.meetingId] = { meta: kv.meta, participants: kv.participants, hasCache: kv.hasCache };
+	}
+
 	const meetingsWithSessions: MeetingWithSessions[] = meetings.map((m) => {
 		const meetingSessions = sessionsByMeeting[m.id] || [];
 		const meetingRecordings = recordingsByMeeting[m.id] || [];
@@ -179,7 +201,13 @@ export const onRequestGet: PagesFunction<Env> = async ({ env }) => {
 			};
 		});
 
-		return { ...m, sessions };
+		return {
+			...m,
+			sessions,
+			createdBy: kvByMeeting[m.id]?.meta?.createdBy,
+			participants: kvByMeeting[m.id]?.participants,
+			hasCachedSummary: kvByMeeting[m.id]?.hasCache,
+		};
 	});
 
 	console.log("[meetings.ts] Returning", meetingsWithSessions.length, "meetings with sessions");
