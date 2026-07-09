@@ -235,6 +235,8 @@ function SessionRow({ session, meetingId }: { session: MeetingSession; meetingId
 	const compositeRecs = session.recordings.filter((r) => r.type === "composite");
 	const trackRecs = session.recordings.filter((r) => r.type === "track");
 	const hasUploaded = session.recordings.some((r) => r.status === "UPLOADED");
+	const totalRecDuration = session.recordings.reduce((sum, r) => sum + (r.recording_duration || 0), 0);
+	const recDurationStr = totalRecDuration > 0 ? formatDuration(undefined, new Date(totalRecDuration * 1000).toISOString()) : "";
 
 	return (
 		<div className={`session-row ${statusInfo.cls}`}>
@@ -258,7 +260,28 @@ function SessionRow({ session, meetingId }: { session: MeetingSession; meetingId
 						<span className="session-detail-label">Duration</span>
 						{duration}
 					</span>
+					{session.participant_count != null && session.participant_count > 0 && (
+						<span className="session-detail">
+							<span className="session-detail-label">Participants</span>
+							{session.participant_count}
+						</span>
+					)}
+					{recDurationStr && (
+						<span className="session-detail">
+							<span className="session-detail-label">Recording</span>
+							{recDurationStr}
+						</span>
+					)}
 				</div>
+				{session.transcription_minutes != null && session.transcription_minutes > 0 ? (
+					<div className="session-transcription-status">
+						<span className="transcription-badge transcribed">✓ Transcribed ({session.transcription_minutes.toFixed(1)} min)</span>
+					</div>
+				) : session.recording_minutes != null && session.recording_minutes > 0 ? (
+					<div className="session-transcription-status">
+						<span className="transcription-badge not-transcribed">✕ Not transcribed</span>
+					</div>
+				) : null}
 			</div>
 
 			<div className="session-row-recordings">

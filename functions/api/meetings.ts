@@ -26,7 +26,9 @@ interface RTKSession {
 	updated_at?: string;
 	started_at?: string;
 	ended_at?: string;
-	participant_count?: number;
+	total_participants?: number;
+	recording_minutes_consumed?: number;
+	transcription_minutes_consumed?: number;
 }
 
 interface RTKRecording {
@@ -49,11 +51,14 @@ interface MeetingWithSessions extends RTKMeeting {
 		created_at?: string;
 		ended_at?: string;
 		participant_count?: number;
+		recording_minutes?: number;
+		transcription_minutes?: number;
 		recordings: {
 			id: string;
 			status: string;
 			type: string;
 			invoked_time?: string;
+			recording_duration?: number;
 			has_video: boolean;
 			has_audio: boolean;
 			has_track: boolean;
@@ -134,7 +139,10 @@ export const onRequestGet: PagesFunction<Env> = async ({ env }) => {
 
 	const sessionsByMeeting: Record<string, RTKSession[]> = {};
 	for (const sr of sessionsResults) {
-		sessionsByMeeting[sr.meetingId] = sr.sessions.filter((s) => s.associated_id === sr.meetingId);
+		// Filter to this meeting's sessions, sort by created_at DESC (latest first)
+		const filtered = sr.sessions.filter((s) => s.associated_id === sr.meetingId);
+		filtered.sort((a, b) => (b.created_at || b.started_at || "").localeCompare(a.created_at || a.started_at || ""));
+		sessionsByMeeting[sr.meetingId] = filtered;
 	}
 	console.log("[meetings.ts] Sessions loaded for", Object.keys(sessionsByMeeting).length, "meetings");
 
@@ -151,6 +159,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ env }) => {
 					status: r.status,
 					type: isTrack ? "track" : "composite",
 					invoked_time: r.invoked_time,
+					recording_duration: (r as unknown as Record<string, unknown>).recording_duration as number | undefined,
 					has_video: !isTrack && typeof r.download_url === "string",
 					has_audio: !isTrack && !!r.audio_download_url,
 					has_track: isTrack,
@@ -163,7 +172,9 @@ export const onRequestGet: PagesFunction<Env> = async ({ env }) => {
 				recording_status: s.recording_status,
 				created_at: s.created_at || s.started_at,
 				ended_at: s.ended_at,
-				participant_count: s.participant_count,
+				participant_count: s.total_participants,
+				recording_minutes: s.recording_minutes_consumed,
+				transcription_minutes: s.transcription_minutes_consumed,
 				recordings,
 			};
 		});

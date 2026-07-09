@@ -2,49 +2,11 @@ interface Env {
 	CF_ACCOUNT_ID: string;
 	CF_API_TOKEN: string;
 	RTK_APP_ID: string;
-	OPENROUTER_API_KEY: string;
-	OPENROUTER_MODEL?: string;
-	OPENROUTER_FREE_MODEL?: string;
-	OLLAMA_API_KEY: string;
-	OLLAMA_BASE_URL: string;
-	OLLAMA_MODEL?: string;
 }
 
 const RTK_BASE = "https://api.cloudflare.com/client/v4/accounts";
 
-const SUMMARY_SYSTEM_PROMPT = `You are an expert meeting analyst and executive assistant. Your job is to analyze a meeting transcript and produce a comprehensive, well-structured Markdown summary.
-
-Here is the format you MUST follow:
-
-## Meeting Summary
-Write a detailed overview paragraph (4-8 sentences) explaining what the meeting was about, its purpose, the overall tone, and the main themes discussed. Include who was present if identifiable from the transcript.
-
-## Key Topics Discussed
-List every distinct topic that was discussed during the meeting. For each topic, write 2-4 sentences explaining what was said about it. Use bullet points. Be specific — reference actual points, numbers, or details mentioned.
-
-## Decisions Made
-List every decision that was reached during the meeting. Each decision should be a bullet point with the decision in **bold** followed by a brief explanation of the rationale. If no formal decisions were made, note that.
-
-## Action Items
-Extract every action item, task, or follow-up mentioned. Format as a checklist:
-- [ ] **Owner Name** — Task description (deadline if mentioned)
-If an owner is not identifiable, use **Unassigned**. Include any deadlines or timelines mentioned.
-
-## Open Questions
-List any questions that were raised but not resolved during the meeting. Format as bullet points. If none, note "No open questions."
-
-## Participants
-List the participants who spoke during the meeting (identifiable from the transcript). If you can tell from the transcript, note who seemed to be leading the meeting.
-
-## Sentiment & Engagement
-Provide a brief assessment (2-3 sentences) of the meeting's energy, engagement level, and any notable dynamics (e.g., disagreements, enthusiasm, confusion, urgency).
-
-Rules:
-- Be thorough and detailed — this summary should be useful for someone who did NOT attend the meeting.
-- Use the actual words and names from the transcript. Do NOT invent information.
-- If the transcript is unclear or fragmented, do your best and note any gaps.
-- Keep it professional, clear, and skimmable with proper Markdown formatting.
-- Use timestamps from the transcript to reference when key moments occurred, if available.`;
+const CHUNK_SIZE = 20 * 1024 * 1024; // 20MB per chunk (safely under 25MB limit)
 
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 	const body = await request.json() as { meetingId: string; audioUrl: string; trackFiles?: { filename: string; downloadUrl: string; userId: string; peerId: string }[] };
@@ -73,7 +35,10 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 				const cl = audioRes.headers.get("content-length");
 				const sizeMb = cl ? parseInt(cl) / (1024 * 1024) : 0;
 				console.log("[transcribe.ts] Track", track.userId, "size:", sizeMb.toFixed(1), "MB");
-				if (sizeMb > 25) continue;
+				if (sizeMb > 25) {
+					console.log("[transcribe.ts] Track too large, skipping");
+					continue;
+				}
 
 				const audioBuffer = await audioRes.arrayBuffer();
 				const whisperRes = await fetch(
@@ -110,49 +75,77 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 	if (transcriptText.trim().length === 0 && body.audioUrl) {
 		console.log("[transcribe.ts] Trying Whisper on composite MP3");
 		try {
-			const audioRes = await fetch(body.audioUrl);
-			if (audioRes.ok) {
-				const cl = audioRes.headers.get("content-length");
-				const sizeMb = cl ? parseInt(cl) / (1024 * 1024) : 0;
-				console.log("[transcribe.ts] Composite size:", sizeMb.toFixed(1), "MB");
+			// First, get the Content-Length via a HEAD request
+			const headRes = await fetch(body.audioUrl, { method: "HEAD" });
+			const totalSize = parseInt(headRes.headers.get("content-length") || "0");
+			const sizeMb = totalSize / (1024 * 1024);
+			console.log("[transcribe.ts] Composite size:", sizeMb.toFixed(1), "MB");
 
-				if (sizeMb > 25) {
+			if (totalSize === 0) {
+				// Fallback: download the whole thing
+				const audioRes = await fetch(body.audioUrl);
+				if (!audioRes.ok) {
+					return jsonResponse(200, { status: "error", error: "Failed to download audio" });
+				}
+				const audioBuffer = await audioRes.arrayBuffer();
+				const chunkText = await transcribeChunk(env, authHeaders, audioBuffer, "full");
+				if (chunkText) transcriptText = chunkText;
+			} else if (sizeMb <= 25) {
+				// Small enough — single Whisper call
+				console.log("[transcribe.ts] Single chunk (", sizeMb.toFixed(1), "MB)");
+				const audioRes = await fetch(body.audioUrl);
+				if (!audioRes.ok) {
+					return jsonResponse(200, { status: "error", error: "Failed to download audio" });
+				}
+				const audioBuffer = await audioRes.arrayBuffer();
+				const chunkText = await transcribeChunk(env, authHeaders, audioBuffer, "full");
+				if (chunkText) transcriptText = chunkText;
+			} else {
+				// Large file — split into chunks using HTTP Range
+				const numChunks = Math.ceil(totalSize / CHUNK_SIZE);
+				console.log("[transcribe.ts] Splitting into", numChunks, "chunks of", CHUNK_SIZE / (1024 * 1024), "MB each");
+
+				const chunkTranscripts: string[] = [];
+
+				for (let i = 0; i < numChunks; i++) {
+					const start = i * CHUNK_SIZE;
+					const end = Math.min(start + CHUNK_SIZE - 1, totalSize - 1);
+					const chunkMb = (end - start + 1) / (1024 * 1024);
+					console.log(`[transcribe.ts] Chunk ${i + 1}/${numChunks} — bytes ${start}-${end} (${chunkMb.toFixed(1)} MB)`);
+
+					try {
+						const chunkRes = await fetch(body.audioUrl, {
+							headers: { Range: `bytes=${start}-${end}` },
+						});
+
+						if (!chunkRes.ok) {
+							console.log(`[transcribe.ts] Chunk ${i + 1} download failed:`, chunkRes.status);
+							continue;
+						}
+
+						const chunkBuffer = await chunkRes.arrayBuffer();
+						const chunkText = await transcribeChunk(env, authHeaders, chunkBuffer, `chunk ${i + 1}/${numChunks}`);
+
+						if (chunkText) {
+							chunkTranscripts.push(chunkText);
+							console.log(`[transcribe.ts] Chunk ${i + 1} transcript:`, chunkText.length, "chars");
+						} else {
+							console.log(`[transcribe.ts] Chunk ${i + 1} produced no transcript`);
+						}
+					} catch (e) {
+						console.log(`[transcribe.ts] Chunk ${i + 1} error:`, e instanceof Error ? e.message : String(e));
+					}
+				}
+
+				if (chunkTranscripts.length > 0) {
+					transcriptText = chunkTranscripts.join("\n\n");
+					console.log("[transcribe.ts] Merged", chunkTranscripts.length, "chunk transcripts, total:", transcriptText.length, "chars");
+				} else {
+					console.log("[transcribe.ts] All chunks failed — returning too_large");
 					return jsonResponse(200, {
 						status: "too_large",
 						sizeMb: sizeMb.toFixed(1),
-						message: `Audio file is ${sizeMb.toFixed(1)} MB, exceeds 25 MB Workers AI limit. Download and transcribe manually.`,
-					});
-				}
-
-				const audioBuffer = await audioRes.arrayBuffer();
-				const whisperRes = await fetch(
-					`${RTK_BASE}/${env.CF_ACCOUNT_ID}/ai/run/@cf/openai/whisper-large-v3-turbo`,
-					{
-						method: "POST",
-						headers: { ...authHeaders, "Content-Type": "audio/mpeg" },
-						body: audioBuffer,
-					}
-				);
-
-				if (whisperRes.ok) {
-					const wj = await whisperRes.json() as { result?: { text?: string } };
-					const wt = wj.result?.text;
-					console.log("[transcribe.ts] Composite transcript:", wt?.length || 0, "chars");
-					if (wt && wt.trim()) {
-						const trimmed = wt.trim();
-						const fp = trimmed.split(".")[0];
-						const pc = (trimmed.match(new RegExp(fp.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + "\\.?", "g")) || []).length;
-						if (!(pc > 3 && trimmed.length < 200)) {
-							transcriptText = trimmed;
-						}
-					}
-				} else {
-					const errText = await whisperRes.text();
-					console.log("[transcribe.ts] Whisper failed:", whisperRes.status, errText.slice(0, 200));
-					return jsonResponse(200, {
-						status: "whisper_failed",
-						httpStatus: whisperRes.status,
-						message: `Whisper transcription failed (HTTP ${whisperRes.status}).`,
+						message: `Audio file is ${sizeMb.toFixed(1)} MB. Chunked transcription failed — download the audio recording below and transcribe it manually.`,
 					});
 				}
 			}
@@ -166,7 +159,6 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 		return jsonResponse(200, { status: "no_speech", message: "No speech detected in any audio source." });
 	}
 
-	// Return transcript immediately — frontend will call /api/generate-summary separately
 	console.log("[transcribe.ts] Done — transcript:", transcriptText.length, "chars");
 	return jsonResponse(200, {
 		status: "transcribed",
@@ -174,10 +166,43 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 	});
 };
 
-export const onRequestPut: PagesFunction<Env> = async ({ request, env }) => {
-	// Re-transcribe with existing data (not used, but needed for Pages Functions routing)
-	return jsonResponse(200, { status: "ok" });
-};
+async function transcribeChunk(env: Env, authHeaders: Record<string, string>, audioBuffer: ArrayBuffer, label: string): Promise<string | undefined> {
+	try {
+		const whisperRes = await fetch(
+			`${RTK_BASE}/${env.CF_ACCOUNT_ID}/ai/run/@cf/openai/whisper-large-v3-turbo`,
+			{
+				method: "POST",
+				headers: { ...authHeaders, "Content-Type": "audio/mpeg" },
+				body: audioBuffer,
+			}
+		);
+
+		if (whisperRes.ok) {
+			const wj = await whisperRes.json() as { result?: { text?: string } };
+			const wt = wj.result?.text?.trim();
+			console.log(`[transcribe.ts] Whisper ${label}:`, wt?.length || 0, "chars");
+
+			if (wt && wt.length > 0) {
+				// Hallucination check
+				const fp = wt.split(".")[0];
+				if (fp && fp.length < 30) {
+					const pc = (wt.match(new RegExp(fp.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\.?", "g")) || []).length;
+					if (pc > 3 && wt.length < 200) {
+						console.log(`[transcribe.ts] ${label} — hallucination detected, skipping`);
+						return undefined;
+					}
+				}
+				return wt;
+			}
+		} else {
+			const errText = await whisperRes.text();
+			console.log(`[transcribe.ts] Whisper ${label} failed:`, whisperRes.status, errText.slice(0, 200));
+		}
+	} catch (e) {
+		console.log(`[transcribe.ts] Whisper ${label} error:`, e instanceof Error ? e.message : String(e));
+	}
+	return undefined;
+}
 
 function jsonResponse(status: number, body: unknown): Response {
 	return new Response(JSON.stringify(body), {

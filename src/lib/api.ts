@@ -50,6 +50,7 @@ export interface SessionRecording {
 	status: string;
 	type: "composite" | "track";
 	invoked_time?: string;
+	recording_duration?: number;
 	has_video: boolean;
 	has_audio: boolean;
 	has_track: boolean;
@@ -62,6 +63,8 @@ export interface MeetingSession {
 	created_at?: string;
 	ended_at?: string;
 	participant_count?: number;
+	recording_minutes?: number;
+	transcription_minutes?: number;
 	recordings: SessionRecording[];
 }
 
