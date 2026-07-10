@@ -1,4 +1,4 @@
-import { getCachedResult, getMeetingMeta, getParticipants } from "../../lib/kv";
+import { getCachedResult, getMeetingMeta, getParticipants, saveCachedResult } from "../../lib/kv";
 
 interface Env {
 	CF_ACCOUNT_ID: string;
@@ -153,6 +153,55 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, env }) => {
 			participants: participants.length > 0 ? participants : undefined,
 		});
 	}
+	// 1.75. Transcript-only cache hit — return cached transcript so frontend can skip re-transcribing
+	if (cached && cached.transcript && !cached.summary) {
+		console.log("[summary.ts] KV cache hit — transcript only (no summary), returning needs_transcription with cached transcript");
+		const recRes = await fetch(
+			`${RTK_BASE}/${env.CF_ACCOUNT_ID}/realtime/kit/${env.RTK_APP_ID}/recordings?meeting_id=${meetingId}`,
+			{ headers: authHeaders }
+		).catch(() => null);
+		let recordingUrl: string | undefined;
+		let audioRecordingUrl: string | undefined;
+		let trackFiles: { filename: string; downloadUrl: string; userId: string; peerId: string }[] = [];
+		if (recRes && recRes.ok) {
+			try {
+				const recJson = await recRes.json() as { success: boolean; data?: { meeting_id: string; session_id?: string; download_url: unknown; audio_download_url?: string; status: string; output_file_name?: string }[] };
+				const sessionRecordings = (recJson.data || []).filter((r) => r.meeting_id === meetingId && r.session_id === session.id);
+				for (const rec of sessionRecordings) {
+					if (rec.status !== "UPLOADED") continue;
+					const isTrack = (rec.output_file_name || "").includes(".webm") || typeof rec.download_url !== "string";
+					if (isTrack) {
+						let trackLayers: { layer_name?: string; download_urls?: Record<string, { download_url?: string }> }[] = [];
+						const du = rec.download_url as Record<string, unknown>;
+						if (Array.isArray(du)) trackLayers = du;
+						else if (du && typeof du === "object" && Array.isArray(du.links)) trackLayers = du.links as typeof trackLayers;
+						else if (du && typeof du === "object") trackLayers = [du] as unknown as typeof trackLayers;
+						for (const layer of trackLayers) {
+							for (const [filename, info] of Object.entries(layer.download_urls || {})) {
+								const parts = filename.replace(/\.webm$/, "").split("_");
+								trackFiles.push({ filename, downloadUrl: info.download_url || "", userId: parts[1] || "unknown", peerId: parts[2] || "unknown" });
+							}
+						}
+					} else {
+						if (typeof rec.download_url === "string") recordingUrl = rec.download_url;
+						if (rec.audio_download_url) audioRecordingUrl = rec.audio_download_url;
+					}
+				}
+			} catch (e) {
+				console.log("[summary.ts] Transcript-only cache — recording parse error:", e);
+			}
+		}
+		return jsonResponse(200, {
+			status: "needs_transcription",
+			transcriptUrl: undefined,
+			recordingUrl,
+			audioRecordingUrl,
+			trackFiles: trackFiles.length > 0 ? trackFiles : undefined,
+			sessionId: session.id,
+			transcript_text: cached.transcript,
+		});
+	}
+
 	console.log("[summary.ts] No KV cache — proceeding with full flow");
 
 	// 2. Fetch transcript URL (fast — just the URL, don't download yet)
@@ -235,6 +284,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, env }) => {
 	if (transcriptLines.length > 0) {
 		// CF transcript exists — generate summary with OpenRouter/Ollama
 		const summary = await generateSummary(transcriptText, env);
+		await saveCachedResult(env.MEETING_CACHE, meetingId, { transcript: transcriptText, summary: summary || "", cachedAt: new Date().toISOString() });
 		console.log("[summary.ts] Summary from CF transcript:", summary?.length || 0, "chars");
 		return jsonResponse(200, {
 			status: summary ? "ok" : "no_summary",

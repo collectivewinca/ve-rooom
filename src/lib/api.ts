@@ -210,12 +210,12 @@ export async function transcribeAudio(meetingId: string, audioUrl: string, track
 	return data;
 }
 
-export async function generateSummaryFromTranscript(transcript: string): Promise<GenerateSummaryResponse> {
-	console.log("[api.ts] generateSummaryFromTranscript — transcript:", transcript.length, "chars");
+export async function generateSummaryFromTranscript(transcript: string, meetingId?: string): Promise<GenerateSummaryResponse> {
+	console.log("[api.ts] generateSummaryFromTranscript — transcript:", transcript.length, "chars", "meetingId:", meetingId);
 	const res = await fetch("/api/generate-summary", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ transcript }),
+		body: JSON.stringify({ transcript, meetingId }),
 	});
 	console.log("[api.ts] generateSummary response status:", res.status);
 	if (!res.ok) {

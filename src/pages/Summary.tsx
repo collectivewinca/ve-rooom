@@ -3,6 +3,17 @@ import { useParams, useNavigate, Link } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import { getSummary, transcribeAudio, generateSummaryFromTranscript, type SummaryResponse } from "../lib/api";
 
+function generateTranscriptCsvUrl(text: string): string {
+	const lines = text.split("\n");
+	const csvLines = ['"Line","Text"'];
+	lines.forEach((line, i) => {
+		if (!line.trim()) return;
+		const escaped = line.replace(/"/g, '""');
+		csvLines.push(`${i + 1},"${escaped}"`);
+	});
+	return `data:text/csv;charset=utf-8,${encodeURIComponent(csvLines.join("\n"))}`;
+}
+
 export default function Summary() {
 	const { roomId } = useParams<{ roomId: string }>();
 	const navigate = useNavigate();
@@ -66,6 +77,26 @@ export default function Summary() {
 	async function triggerTranscription(summaryData: SummaryResponse) {
 		if (!roomId || transcribing) return;
 		setTranscribing(true);
+
+		// If transcript_text is already provided (e.g., from KV cache), skip audio re-transcribe
+		if (summaryData.transcript_text) {
+			setTranscribeStatus("Transcript cached! Generating AI summary...");
+			try {
+				const summaryResult = await generateSummaryFromTranscript(summaryData.transcript_text, roomId);
+				if (summaryResult.status === "ok" && summaryResult.summary) {
+					setTranscribeStatus("Summary generated!");
+					setData({ ...summaryData, status: "ok", summary: summaryResult.summary });
+				} else {
+					setTranscribeStatus("Summary generation failed. Transcript is available below.");
+					setData({ ...summaryData, status: "ok", summary: "## Meeting Summary\n\nAI summary generation failed, but the transcript is available below.\n\nDownload the full transcript to read the meeting content." });
+				}
+			} catch (e) {
+				setTranscribeStatus("Summary generation failed: " + (e instanceof Error ? e.message : String(e)));
+			}
+			setTranscribing(false);
+			return;
+		}
+
 		setTranscribeStatus("Downloading audio and running Whisper transcription...");
 		try {
 			const result = await transcribeAudio(roomId, summaryData.audioRecordingUrl || "", summaryData.trackFiles);
@@ -76,7 +107,7 @@ export default function Summary() {
 				setData({ ...summaryData, transcript_text: result.transcript });
 
 				// Step 2: Generate summary from transcript
-				const summaryResult = await generateSummaryFromTranscript(result.transcript);
+				const summaryResult = await generateSummaryFromTranscript(result.transcript, roomId);
 				console.log("[Summary] Generate summary result:", summaryResult.status);
 
 				if (summaryResult.status === "ok" && summaryResult.summary) {
@@ -114,7 +145,7 @@ export default function Summary() {
 		}
 	}
 
-	const hasDownloads = data?.transcriptUrl || data?.recordingUrl || data?.audioRecordingUrl || (data?.trackFiles && data.trackFiles.length > 0);
+	const hasDownloads = data?.transcriptUrl || data?.transcript_text || data?.recordingUrl || data?.audioRecordingUrl || (data?.trackFiles && data.trackFiles.length > 0);
 	const showSummary = (data?.status === "ok" && !!data.summary) || (data?.status === "needs_transcription" && !!data.summary);
 	const showBlur = data && data.status !== "no_ended_session" && data.status !== "error" && !showSummary;
 
@@ -176,7 +207,34 @@ export default function Summary() {
 				<div className="download-section">
 					<h3>Downloads</h3>
 					<div className="download-grid">
-						{data?.transcriptUrl && (
+						{data?.transcript_text && data.transcript_text.trim().length > 0 ? (
+							<>
+								<a href={generateTranscriptCsvUrl(data.transcript_text)} download="transcript.csv" className="download-card">
+									<div className="download-card-icon" style={{ background: "rgba(34, 197, 94, 0.15)" }}>
+										<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+											<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+											<polyline points="14 2 14 8 20 8"/>
+										</svg>
+									</div>
+									<div className="download-card-info">
+										<div className="download-card-title">Transcript</div>
+										<div className="download-card-subtitle">CSV file</div>
+									</div>
+								</a>
+								<a href={`data:text/plain;charset=utf-8,${encodeURIComponent(data.transcript_text)}`} download="transcript.txt" className="download-card">
+									<div className="download-card-icon" style={{ background: "rgba(34, 197, 94, 0.15)" }}>
+										<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+											<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+											<polyline points="14 2 14 8 20 8"/>
+										</svg>
+									</div>
+									<div className="download-card-info">
+										<div className="download-card-title">Transcript</div>
+										<div className="download-card-subtitle">Text file</div>
+									</div>
+								</a>
+							</>
+						) : data?.transcriptUrl && (
 							<a href={data.transcriptUrl} target="_blank" rel="noreferrer" className="download-card">
 								<div className="download-card-icon" style={{ background: "rgba(34, 197, 94, 0.15)" }}>
 									<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -251,27 +309,6 @@ export default function Summary() {
 					</div>
 				)}
 
-				{data?.transcript_text && (
-					<div className="download-section" style={{ marginTop: "1.5rem" }}>
-						<h3>Full Transcript</h3>
-						<a
-							href={`data:text/plain;charset=utf-8,${encodeURIComponent(data.transcript_text)}`}
-							download="transcript.txt"
-							className="download-card"
-						>
-							<div className="download-card-icon" style={{ background: "rgba(34, 197, 94, 0.15)" }}>
-								<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-									<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-									<polyline points="14 2 14 8 20 8"/>
-								</svg>
-							</div>
-							<div className="download-card-info">
-								<div className="download-card-title">Full Transcript</div>
-								<div className="download-card-subtitle">Text file</div>
-							</div>
-						</a>
-					</div>
-				)}
 			</div>
 
 			{showBlur && (

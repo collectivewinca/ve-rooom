@@ -1,4 +1,4 @@
-import { getCachedResult } from "../lib/kv";
+import { getCachedResult, saveCachedResult } from "../lib/kv";
 
 interface Env {
 	CF_ACCOUNT_ID: string;
@@ -27,6 +27,17 @@ async function getAudioSize(url: string): Promise<number> {
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 	const body = await request.json() as { meetingId: string; audioUrl: string; trackFiles?: { filename: string; downloadUrl: string; userId: string; peerId: string }[] };
 	console.log("[transcribe.ts] POST — meetingId:", body.meetingId, "audioUrl:", body.audioUrl ? "found" : "none", "trackFiles:", body.trackFiles?.length || 0);
+
+	// If we already have a cached transcript, return it immediately (no re-transcribe)
+	const existing = await getCachedResult(env.MEETING_CACHE, body.meetingId);
+	if (existing && existing.transcript) {
+		console.log("[transcribe.ts] Cached transcript found — returning directly, summary:", existing.summary?.length || 0, "chars");
+		return jsonResponse(200, {
+			status: existing.summary ? "ok" : "transcribed",
+			transcript: existing.transcript,
+			summary: existing.summary || undefined,
+		});
+	}
 
 	if (!env.CF_ACCOUNT_ID || !env.CF_API_TOKEN) {
 		return jsonResponse(500, { error: "Server missing configuration" });
@@ -158,13 +169,13 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 
 	transcriptText = dedupeTranscript(transcriptText);
 
-	const cached = await getCachedResult(env.MEETING_CACHE, body.meetingId);
+	// Save raw transcript to KV so it survives page refresh
+	await saveCachedResult(env.MEETING_CACHE, body.meetingId, { transcript: transcriptText, summary: "", cachedAt: new Date().toISOString() });
 
-	console.log("[transcribe.ts] Done — transcript:", transcriptText.length, "chars, cached summary:", cached?.summary?.length || 0, "chars");
+	console.log("[transcribe.ts] Done — transcript:", transcriptText.length, "chars");
 	return jsonResponse(200, {
-		status: cached?.summary ? "ok" : "transcribed",
+		status: "transcribed",
 		transcript: transcriptText,
-		summary: cached?.summary,
 	});
 };
 

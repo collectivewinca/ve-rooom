@@ -518,6 +518,7 @@ The RealtimeKit API uses inconsistent naming conventions. Notable fields:
 - **Transcription cost** — Whisper Large v3 Turbo costs ~47 Neurons per audio-minute. Real-time alternatives (e.g., Deepgram) cost ~836 Neurons/min (18x more).
 - **API field naming inconsistency** — Some endpoints use snake_case (`transcript_download_url`), others use camelCase (`download_url`, `audio_download_url`). The code handles both.
 - **Track recording docs vs reality** — Docs say `layers` is optional; API returns 422 if omitted. `layers.default.outputs` array with `type: "REALTIMEKIT_BUCKET"` is required.
+- **Screen sharing unavailable on mobile** — The `getDisplayMedia()` API required for screen sharing is not supported on iOS Safari (all iOS browsers) and has limited support on Android Chrome. The `<RtkMeeting>` Web Component handles this internally — no workaround exists at the platform level. The app does not hide the screen share button on mobile; it will appear but fail silently.
 
 ---
 
