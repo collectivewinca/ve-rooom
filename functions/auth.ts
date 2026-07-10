@@ -1,6 +1,8 @@
+import type { AppEnv } from "./lib/env";
+
 const FORMSDB_DEFAULT = "https://formsdb.exe.xyz";
 
-export async function verifyAuthToken(authToken: string | undefined, env: Env): Promise<{ email: string; name: string } | null> {
+export async function verifyAuthToken(authToken: string | undefined, env: Pick<AppEnv, "FORMSDB_URL">): Promise<{ email: string; name: string } | null> {
 	if (!authToken) return null;
 
 	const pbUrl = (env.FORMSDB_URL || FORMSDB_DEFAULT).replace(/\/+$/, "");

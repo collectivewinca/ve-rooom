@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import {
 	RealtimeKitProvider,
 	useRealtimeKitClient,
@@ -10,13 +10,22 @@ import { startCompositeRecording, startTrackRecording, stopAllRecordings } from 
 
 export default function Meeting() {
 	const { roomId } = useParams<{ roomId: string }>();
-	const [search] = useSearchParams();
-	const authToken = search.get("authToken");
 	const navigate = useNavigate();
 	const [meeting, initMeeting] = useRealtimeKitClient();
 	const initialized = useRef(false);
+	const [authToken, setAuthToken] = useState<string | null>(null);
+	const [connectionError, setConnectionError] = useState("");
 
-	console.log("[Meeting] Render — roomId:", roomId, "hasAuthToken:", !!authToken, "meetingReady:", !!meeting);
+	console.log("[Meeting] Render — roomId:", roomId, "meetingReady:", !!meeting);
+
+	useEffect(() => {
+		if (!roomId) return;
+		const token = sessionStorage.getItem(`rtk_token_${roomId}`);
+		if (token) {
+			setAuthToken(token);
+			sessionStorage.removeItem(`rtk_token_${roomId}`);
+		}
+	}, [roomId]);
 
 	useEffect(() => {
 		console.log("[Meeting] useEffect — authToken:", authToken ? "present" : "missing", "initialized:", initialized.current);
@@ -27,11 +36,11 @@ export default function Meeting() {
 			console.log("[Meeting] initMeeting resolved — meeting should be ready");
 		}).catch((e) => {
 			console.log("[Meeting] initMeeting error:", e);
+			setConnectionError(e instanceof Error ? e.message : "Failed to connect to meeting");
 		});
 	}, [authToken, initMeeting]);
 
 	if (!authToken) {
-		console.log("[Meeting] No authToken — showing error");
 		return (
 			<div className="meeting-error">
 				<p>Missing auth token. Please go back and create or join a meeting.</p>
@@ -42,8 +51,18 @@ export default function Meeting() {
 		);
 	}
 
+	if (connectionError) {
+		return (
+			<div className="meeting-error">
+				<p>Failed to connect: {connectionError}</p>
+				<button className="btn-secondary" onClick={() => navigate("/")}>
+					Back to Home
+				</button>
+			</div>
+		);
+	}
+
 	if (!meeting) {
-		console.log("[Meeting] Meeting not ready yet — showing loading");
 		return (
 			<div className="meeting-loading">
 				<div className="spinner" />

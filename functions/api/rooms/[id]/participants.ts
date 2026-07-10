@@ -1,21 +1,18 @@
 import { verifyAuthToken } from "../../../auth";
 import { addParticipant, addUserMeeting } from "../../../lib/kv";
-
-interface Env {
-	CF_ACCOUNT_ID: string;
-	CF_API_TOKEN: string;
-	RTK_APP_ID: string;
-	OLLAMA_API_KEY: string;
-	OLLAMA_BASE_URL: string;
-	FORMSDB_URL?: string;
-	MEETING_CACHE: KVNamespace;
-}
+import { jsonResponse } from "../../../lib/response";
+import { checkRateLimit } from "../../../lib/rate-limit";
+import type { AppEnv } from "../../../lib/env";
 
 const RTK_BASE = "https://api.cloudflare.com/client/v4/accounts";
 
+type Env = Pick<AppEnv, "CF_ACCOUNT_ID" | "CF_API_TOKEN" | "RTK_APP_ID" | "OLLAMA_API_KEY" | "OLLAMA_BASE_URL" | "FORMSDB_URL" | "MEETING_CACHE">;
+
 export const onRequestPost: PagesFunction<Env> = async ({ params, request, env }) => {
+	const rl = await checkRateLimit(env.MEETING_CACHE, request);
+	if (!rl.allowed) return jsonResponse(429, { error: "Too many requests. Please slow down." });
+
 	const roomId = params.id as string;
-	console.log("[participants.ts] POST /api/rooms/:id/participants — start, roomId:", roomId);
 
 	let body: { name?: string; authToken?: string };
 	try {
@@ -80,9 +77,3 @@ export const onRequestPost: PagesFunction<Env> = async ({ params, request, env }
 	return jsonResponse(200, { authToken: json.data.token });
 };
 
-function jsonResponse(status: number, body: unknown): Response {
-	return new Response(JSON.stringify(body), {
-		status,
-		headers: { "Content-Type": "application/json" },
-	});
-}

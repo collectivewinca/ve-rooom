@@ -1,18 +1,15 @@
 import { verifyAuthToken } from "../../auth";
-
-interface Env {
-	CF_ACCOUNT_ID: string;
-	CF_API_TOKEN: string;
-	RTK_APP_ID: string;
-	OLLAMA_API_KEY: string;
-	OLLAMA_BASE_URL: string;
-	FORMSDB_URL?: string;
-}
+import { jsonResponse } from "../../lib/response";
+import { checkRateLimit } from "../../lib/rate-limit";
+import type { AppEnv } from "../../lib/env";
 
 const RTK_BASE = "https://api.cloudflare.com/client/v4/accounts";
 
+type Env = Pick<AppEnv, "CF_ACCOUNT_ID" | "CF_API_TOKEN" | "RTK_APP_ID" | "OLLAMA_API_KEY" | "OLLAMA_BASE_URL" | "FORMSDB_URL" | "MEETING_CACHE">;
+
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
-	console.log("[recordings/stop.ts] POST /api/recordings/stop — start");
+	const rl = await checkRateLimit(env.MEETING_CACHE, request);
+	if (!rl.allowed) return jsonResponse(429, { error: "Too many requests. Please slow down." });
 
 	if (!env.CF_ACCOUNT_ID || !env.CF_API_TOKEN || !env.RTK_APP_ID) {
 		return jsonResponse(500, { error: "Server missing configuration" });
@@ -96,9 +93,3 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 	});
 };
 
-function jsonResponse(status: number, body: unknown): Response {
-	return new Response(JSON.stringify(body), {
-		status,
-		headers: { "Content-Type": "application/json" },
-	});
-}

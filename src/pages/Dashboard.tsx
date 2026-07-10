@@ -50,6 +50,7 @@ export default function Dashboard() {
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState("");
 	const [expanded, setExpanded] = useState<Set<string>>(new Set());
+	const [searchQuery, setSearchQuery] = useState("");
 
 	console.log("[Dashboard] Render — loading:", loading, "meetings:", meetings.length);
 
@@ -75,6 +76,10 @@ export default function Dashboard() {
 			return next;
 		});
 	};
+
+	const filteredMeetings = searchQuery.trim()
+		? meetings.filter((m) => (m.title || "").toLowerCase().includes(searchQuery.toLowerCase()))
+		: meetings;
 
 	const activeCount = meetings.filter((m) => m.status === "ACTIVE").length;
 	const endedCount = meetings.filter((m) => m.status !== "ACTIVE").length;
@@ -114,13 +119,31 @@ export default function Dashboard() {
 				</div>
 			)}
 
-			<h2>Meetings</h2>
+			{!loading && meetings.length > 0 && (
+				<div className="dashboard-search">
+					<input
+						type="text"
+						value={searchQuery}
+						onChange={(e) => setSearchQuery(e.target.value)}
+						placeholder="Search meetings by title..."
+					/>
+				</div>
+			)}
+
+			<h2>{searchQuery.trim() ? `Meetings (${filteredMeetings.length} found)` : "Meetings"}</h2>
 
 			{loading && (
-				<div className="empty-state">
-					<div className="spinner" style={{ width: 40, height: 40, margin: "0 auto 1rem", border: "3px solid rgba(99, 102, 241, 0.2)", borderTopColor: "var(--color-primary)", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-					<p style={{ color: "var(--color-text-muted)", fontSize: "0.875rem" }}>Loading meetings...</p>
-				</div>
+				<>
+					<div className="dashboard-stats">
+						<div className="stat-card skeleton skeleton-stat" />
+						<div className="stat-card skeleton skeleton-stat" />
+						<div className="stat-card skeleton skeleton-stat" />
+						<div className="stat-card skeleton skeleton-stat" />
+					</div>
+					<div className="skeleton skeleton-row" />
+					<div className="skeleton skeleton-row" />
+					<div className="skeleton skeleton-row" />
+				</>
 			)}
 
 			{error && <div className="error">{error}</div>}
@@ -136,9 +159,16 @@ export default function Dashboard() {
 				</div>
 			)}
 
-			{meetings.length > 0 && (
+			{!loading && meetings.length > 0 && filteredMeetings.length === 0 && (
+				<div className="empty-state">
+					<h3>No meetings match "{searchQuery}"</h3>
+					<p>Try a different search term.</p>
+				</div>
+			)}
+
+			{filteredMeetings.length > 0 && (
 				<div className="meeting-list">
-					{meetings.map((m) => {
+					{filteredMeetings.map((m) => {
 						const isExpanded = expanded.has(m.id);
 						const sessionCount = m.sessions.length;
 						const recordingCount = m.sessions.reduce((s, sess) => s + sess.recordings.length, 0);

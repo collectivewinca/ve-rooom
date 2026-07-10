@@ -41,7 +41,8 @@ export default function Home() {
 		try {
 			const { roomId, authToken } = await createRoom(name.trim(), roomTitle.trim() || undefined);
 			console.log("[Home] Room created, navigating to meeting:", roomId);
-			navigate(`/meeting/${roomId}?authToken=${encodeURIComponent(authToken)}`);
+			sessionStorage.setItem(`rtk_token_${roomId}`, authToken);
+			navigate(`/meeting/${roomId}`);
 		} catch (e) {
 			console.log("[Home] createRoom error:", e);
 			setError(e instanceof Error ? e.message : "Failed to create room");
@@ -61,7 +62,8 @@ export default function Home() {
 		try {
 			const { authToken } = await joinRoom(joinRoomId.trim(), name.trim());
 			console.log("[Home] Joined room, navigating to meeting:", joinRoomId.trim());
-			navigate(`/meeting/${joinRoomId.trim()}?authToken=${encodeURIComponent(authToken)}`);
+			sessionStorage.setItem(`rtk_token_${joinRoomId.trim()}`, authToken);
+			navigate(`/meeting/${joinRoomId.trim()}`);
 		} catch (e) {
 			console.log("[Home] joinRoom error:", e);
 			setError(e instanceof Error ? e.message : "Failed to join room");

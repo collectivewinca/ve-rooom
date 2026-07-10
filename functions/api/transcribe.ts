@@ -1,13 +1,11 @@
 import { getCachedResult, saveCachedResult } from "../lib/kv";
-
-interface Env {
-	CF_ACCOUNT_ID: string;
-	CF_API_TOKEN: string;
-	RTK_APP_ID: string;
-	MEETING_CACHE: KVNamespace;
-}
+import { jsonResponse } from "../lib/response";
+import { checkRateLimit } from "../lib/rate-limit";
+import type { AppEnv } from "../lib/env";
 
 const RTK_BASE = "https://api.cloudflare.com/client/v4/accounts";
+
+type Env = Pick<AppEnv, "CF_ACCOUNT_ID" | "CF_API_TOKEN" | "RTK_APP_ID" | "MEETING_CACHE">;
 
 const CHUNK_SIZE = 20 * 1024 * 1024;
 
@@ -25,6 +23,9 @@ async function getAudioSize(url: string): Promise<number> {
 }
 
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
+	const rl = await checkRateLimit(env.MEETING_CACHE, request);
+	if (!rl.allowed) return jsonResponse(429, { error: "Too many requests. Please slow down." });
+
 	const body = await request.json() as { meetingId: string; audioUrl: string; trackFiles?: { filename: string; downloadUrl: string; userId: string; peerId: string }[] };
 	console.log("[transcribe.ts] POST — meetingId:", body.meetingId, "audioUrl:", body.audioUrl ? "found" : "none", "trackFiles:", body.trackFiles?.length || 0);
 
@@ -242,9 +243,3 @@ function dedupeTranscript(text: string): string {
 	return result;
 }
 
-function jsonResponse(status: number, body: unknown): Response {
-	return new Response(JSON.stringify(body), {
-		status,
-		headers: { "Content-Type": "application/json" },
-	});
-}

@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { useParams, useNavigate, Link } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { useParams, useNavigate, Link, useSearchParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import { getSummary, transcribeAudio, generateSummaryFromTranscript, type SummaryResponse } from "../lib/api";
 
@@ -17,43 +17,43 @@ function generateTranscriptCsvUrl(text: string): string {
 export default function Summary() {
 	const { roomId } = useParams<{ roomId: string }>();
 	const navigate = useNavigate();
+	const [searchParams] = useSearchParams();
+	const showDebug = searchParams.get("debug") === "true";
 	const [data, setData] = useState<SummaryResponse | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState("");
 	const [pollCount, setPollCount] = useState(0);
+	const pollRef = useRef(0);
 	const [pollTimedOut, setPollTimedOut] = useState(false);
 	const [transcribing, setTranscribing] = useState(false);
 	const [transcribeStatus, setTranscribeStatus] = useState("");
-
-	console.log("[Summary] Render — roomId:", roomId, "status:", data?.status, "loading:", loading, "pollCount:", pollCount);
+	const transcribingRef = useRef(false);
 
 	useEffect(() => {
 		if (!roomId) return;
 		let cancelled = false;
+		let timerId: ReturnType<typeof setTimeout> | undefined;
 		const MAX_POLLS = 60;
 
 		async function poll() {
-			console.log("[Summary] Poll #", pollCount + 1, "— fetching summary for:", roomId);
-			setPollCount((c) => c + 1);
+			pollRef.current += 1;
+			const currentPoll = pollRef.current;
+			setPollCount(currentPoll);
 			try {
 				const res = await getSummary(roomId!);
 				if (cancelled) return;
-				console.log("[Summary] Poll result — status:", res.status);
 				setData(res);
 
 				if (res.status === "processing") {
-					if (pollCount + 1 >= MAX_POLLS) {
+					if (currentPoll >= MAX_POLLS) {
 						setPollTimedOut(true);
 						setLoading(false);
 						return;
 					}
-					setTimeout(poll, 5000);
+					timerId = setTimeout(poll, 5000);
 				} else if (res.status === "needs_transcription") {
-					// CF transcript is empty — need to run Whisper on audio
-					// Stop polling, wait for user to click "Transcribe" button
 					setLoading(false);
-					if (!transcribing && res.audioRecordingUrl) {
-						// Auto-trigger transcription
+					if (!transcribingRef.current && res.audioRecordingUrl) {
 						triggerTranscription(res);
 					}
 				} else {
@@ -61,7 +61,6 @@ export default function Summary() {
 				}
 			} catch (e) {
 				if (cancelled) return;
-				console.log("[Summary] Poll error:", e);
 				setError(e instanceof Error ? e.message : "Failed to load summary");
 				setLoading(false);
 			}
@@ -70,15 +69,16 @@ export default function Summary() {
 		poll();
 		return () => {
 			cancelled = true;
+			if (timerId) clearTimeout(timerId);
 		};
 	// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [roomId]);
 
 	async function triggerTranscription(summaryData: SummaryResponse) {
-		if (!roomId || transcribing) return;
+		if (!roomId || transcribingRef.current) return;
+		transcribingRef.current = true;
 		setTranscribing(true);
 
-		// If transcript_text is already provided (e.g., from KV cache), skip audio re-transcribe
 		if (summaryData.transcript_text) {
 			setTranscribeStatus("Transcript cached! Generating AI summary...");
 			try {
@@ -94,21 +94,19 @@ export default function Summary() {
 				setTranscribeStatus("Summary generation failed: " + (e instanceof Error ? e.message : String(e)));
 			}
 			setTranscribing(false);
+			transcribingRef.current = false;
 			return;
 		}
 
 		setTranscribeStatus("Downloading audio and running Whisper transcription...");
 		try {
 			const result = await transcribeAudio(roomId, summaryData.audioRecordingUrl || "", summaryData.trackFiles);
-			console.log("[Summary] Transcribe result:", result.status);
 
 			if (result.status === "transcribed" && result.transcript) {
 				setTranscribeStatus("Transcript ready! Generating AI summary...");
 				setData({ ...summaryData, transcript_text: result.transcript });
 
-				// Step 2: Generate summary from transcript
 				const summaryResult = await generateSummaryFromTranscript(result.transcript, roomId);
-				console.log("[Summary] Generate summary result:", summaryResult.status);
 
 				if (summaryResult.status === "ok" && summaryResult.summary) {
 					setTranscribeStatus("Summary generated!");
@@ -138,10 +136,10 @@ export default function Summary() {
 				setTranscribeStatus("Transcription failed. Download the recording to transcribe manually.");
 			}
 		} catch (e) {
-			console.log("[Summary] Transcribe error:", e);
 			setTranscribeStatus("Transcription failed: " + (e instanceof Error ? e.message : String(e)));
 		} finally {
 			setTranscribing(false);
+			transcribingRef.current = false;
 		}
 	}
 
@@ -157,6 +155,16 @@ export default function Summary() {
 					New Meeting
 				</button>
 			</div>
+
+			{loading && !data && (
+				<>
+					<div className="skeleton" style={{ height: 24, width: "60%", marginBottom: "1.5rem" }} />
+					<div className="skeleton" style={{ height: 16, width: "90%", marginBottom: "0.75rem" }} />
+					<div className="skeleton" style={{ height: 16, width: "75%", marginBottom: "0.75rem" }} />
+					<div className="skeleton" style={{ height: 16, width: "85%", marginBottom: "2rem" }} />
+					<div className="skeleton" style={{ height: 200 }} />
+				</>
+			)}
 
 			{pollTimedOut && (
 				<div className="status-info">
@@ -180,7 +188,7 @@ export default function Summary() {
 				</div>
 			)}
 
-			{data && data.status !== "ok" && data.status !== "no_ended_session" && (
+			{showDebug && data && data.status !== "ok" && data.status !== "no_ended_session" && (
 				<div className="summary-debug">
 					<h4>Summary Flow Status</h4>
 					<div className="debug-row"><span className="debug-label">API Status</span><span className="debug-value">{data.status}</span></div>
