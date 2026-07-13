@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate, Link, useSearchParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { getSummary, transcribeAudio, generateSummaryFromTranscript, scanR2Recordings, type SummaryResponse } from "../lib/api";
 
 function generateTranscriptCsvUrl(text: string): string {
@@ -319,7 +320,7 @@ export default function Summary() {
 			<div className={`summary-body-wrap ${showBlur ? "blurred" : ""}`}>
 				{showSummary && (
 					<div className="summary-content">
-						<ReactMarkdown>{data.summary}</ReactMarkdown>
+						<ReactMarkdown remarkPlugins={[remarkGfm]}>{data.summary}</ReactMarkdown>
 					</div>
 				)}
 
