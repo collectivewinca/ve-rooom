@@ -15,6 +15,12 @@ export interface RecordingRef {
 	uploadedAt?: string;
 }
 
+export interface SummaryVersion {
+	summary: string;
+	prompt?: string;
+	createdAt: string;
+}
+
 export interface SummaryResponse {
 	status: "ok" | "processing" | "no_ended_session" | "no_summary" | "error" | "needs_transcription" | "silent";
 	summary?: string;
@@ -25,6 +31,8 @@ export interface SummaryResponse {
 	sessionId?: string;
 	error?: string;
 	transcript_text?: string;
+	prompt?: string;
+	history?: SummaryVersion[];
 	sessionInfo?: {
 		total_participants?: number;
 		recording_minutes?: number;
@@ -213,12 +221,12 @@ export async function transcribeAudio(meetingId: string, audioUrl: string): Prom
 	return data;
 }
 
-export async function generateSummaryFromTranscript(transcript: string, meetingId?: string): Promise<GenerateSummaryResponse> {
-	console.log("[api.ts] generateSummaryFromTranscript — transcript:", transcript.length, "chars", "meetingId:", meetingId);
+export async function generateSummaryFromTranscript(transcript: string, meetingId?: string, prompt?: string): Promise<GenerateSummaryResponse> {
+	console.log("[api.ts] generateSummaryFromTranscript — transcript:", transcript.length, "chars", "meetingId:", meetingId, "customPrompt:", !!prompt);
 	const res = await fetch("/api/generate-summary", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ transcript, meetingId }),
+		body: JSON.stringify({ transcript, meetingId, prompt }),
 	});
 	console.log("[api.ts] generateSummary response status:", res.status);
 	if (!res.ok) {
@@ -288,4 +296,60 @@ export async function scanR2Recordings(meetingId: string): Promise<RecordingRef[
 	const data = await res.json() as { refs: RecordingRef[]; cached: boolean };
 	console.log("[api.ts] scanR2Recordings found:", data.refs.length, "cached:", data.cached);
 	return data.refs || [];
+}
+
+export async function getUserDefaultPrompt(): Promise<string> {
+	try {
+		const authToken = getAuthToken();
+		if (!authToken) return "";
+		const res = await fetch("/api/prompt", {
+			headers: { Authorization: `Bearer ${authToken}` },
+		});
+		if (!res.ok) return "";
+		const data = await res.json() as { prompt?: string };
+		return data.prompt || "";
+	} catch {
+		return "";
+	}
+}
+
+export async function saveUserDefaultPrompt(prompt: string): Promise<boolean> {
+	try {
+		const authToken = getAuthToken();
+		if (!authToken) throw new Error("Not authenticated");
+		const res = await fetch("/api/prompt", {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Authorization: `Bearer ${authToken}` },
+			body: JSON.stringify({ prompt }),
+		});
+		return res.ok;
+	} catch {
+		return false;
+	}
+}
+
+export async function getMeetingPrompt(meetingId: string): Promise<string> {
+	try {
+		const res = await fetch(`/api/prompt/${meetingId}`);
+		if (!res.ok) return "";
+		const data = await res.json() as { prompt?: string };
+		return data.prompt || "";
+	} catch {
+		return "";
+	}
+}
+
+export async function saveMeetingPrompt(meetingId: string, prompt: string): Promise<boolean> {
+	try {
+		const authToken = getAuthToken();
+		if (!authToken) throw new Error("Not authenticated");
+		const res = await fetch(`/api/prompt/${meetingId}`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Authorization: `Bearer ${authToken}` },
+			body: JSON.stringify({ prompt }),
+		});
+		return res.ok;
+	} catch {
+		return false;
+	}
 }

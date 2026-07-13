@@ -84,10 +84,11 @@ function MeetingView({ roomId }: { roomId: string }) {
 	const { meeting } = useRealtimeKitMeeting();
 	const [copied, setCopied] = useState(false);
 	const [meetingEnded, setMeetingEnded] = useState(false);
+	const [stopping, setStopping] = useState(false);
 	const stopRequested = useRef(false);
 	const meetingRef = useRef(meeting);
 	meetingRef.current = meeting;
-	console.log("[MeetingView] Render — meeting present:", !!meeting, "meetingEnded:", meetingEnded);
+	console.log("[MeetingView] Render — meeting present:", !!meeting, "meetingEnded:", meetingEnded, "stopping:", stopping);
 
 	const shareUrl = `${window.location.origin}/?room=${roomId}`;
 
@@ -98,6 +99,7 @@ function MeetingView({ roomId }: { roomId: string }) {
 		const stopRecordings = async () => {
 			if (stopRequested.current) return;
 			stopRequested.current = true;
+			setStopping(true);
 			console.log("[MeetingView] roomLeft — stopping recordings for meeting:", roomId);
 			try {
 				const res = await stopAllRecordings(roomId);
@@ -105,6 +107,7 @@ function MeetingView({ roomId }: { roomId: string }) {
 			} catch (e) {
 				console.log("[MeetingView] Stop recordings failed:", e);
 			}
+			setStopping(false);
 			setMeetingEnded(true);
 		};
 
@@ -151,6 +154,12 @@ function MeetingView({ roomId }: { roomId: string }) {
 					</svg>
 					{copied ? "Copied!" : "Copy Join Link"}
 				</button>
+				{stopping && (
+					<span className="summary-link summary-link-loading">
+						<span className="spinner" style={{ width: 14, height: 14 }} />
+						Stopping…
+					</span>
+				)}
 				{meetingEnded && (
 					<a href={`/summary/${roomId}`} className="summary-link">
 						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ width: 14, height: 14 }}>

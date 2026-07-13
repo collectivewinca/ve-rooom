@@ -34,68 +34,108 @@ Rules:
 - Keep it professional, clear, and skimmable with proper Markdown formatting.
 - Use timestamps from the transcript to reference when key moments occurred, if available.`;
 
-export async function generateSummary(transcriptText: string, env: Pick<AppEnv, "OPENROUTER_API_KEY" | "OPENROUTER_MODEL" | "OPENROUTER_FREE_MODEL" | "OLLAMA_API_KEY" | "OLLAMA_BASE_URL" | "OLLAMA_MODEL">): Promise<string | undefined> {
+export const DEFAULT_SUMMARY_PROMPT = SUMMARY_SYSTEM_PROMPT;
+
+export async function generateSummary(
+	transcriptText: string,
+	env: Pick<AppEnv, "OPENROUTER_API_KEY" | "OPENROUTER_MODEL" | "OPENROUTER_FREE_MODEL" | "OLLAMA_API_KEY" | "OLLAMA_BASE_URL" | "OLLAMA_MODEL">,
+	customPrompt?: string,
+): Promise<string | undefined> {
+	const systemPrompt = customPrompt && customPrompt.trim().length > 0 ? customPrompt.trim() : SUMMARY_SYSTEM_PROMPT;
 	const openrouterModels = [
 		env.OPENROUTER_MODEL || "openrouter/free",
 		env.OPENROUTER_FREE_MODEL || "openrouter/free",
 	].filter((m, i, arr) => arr.indexOf(m) === i);
 
+	const allProviders: { label: string; run: () => Promise<string | undefined> }[] = [];
+
 	for (const model of openrouterModels) {
 		if (!env.OPENROUTER_API_KEY || env.OPENROUTER_API_KEY === "placeholder") continue;
-		try {
-			const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
-				},
-				body: JSON.stringify({
-					model,
-					messages: [
-						{ role: "system", content: SUMMARY_SYSTEM_PROMPT },
-						{ role: "user", content: `Here is the meeting transcript:\n\n${transcriptText}` },
-					],
-				}),
-			});
-			if (res.ok) {
-				const oj = await res.json() as { choices?: { message?: { content?: string } }[] };
-				const c = oj.choices?.[0]?.message?.content;
-				if (c) return c;
-			} else {
-				const err = await res.text();
-				console.log(`[summarizer] OpenRouter ${res.status}: ${err.slice(0, 200)}`);
-			}
-		} catch (e) {
-			console.log(`[summarizer] OpenRouter error: ${e instanceof Error ? e.message : String(e)}`);
-		}
+		allProviders.push({
+			label: `OpenRouter ${model}`,
+			run: async () => {
+				try {
+					const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+						method: "POST",
+						headers: {
+							"Content-Type": "application/json",
+							Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+						},
+						body: JSON.stringify({
+							model,
+							messages: [
+								{ role: "system", content: systemPrompt },
+								{ role: "user", content: `Here is the meeting transcript:\n\n${transcriptText}` },
+							],
+						}),
+					});
+					if (res.ok) {
+						const oj = await res.json() as { choices?: { message?: { content?: string } }[] };
+						const c = oj.choices?.[0]?.message?.content;
+						if (c) return c;
+					} else {
+						const err = await res.text();
+						console.log(`[summarizer] OpenRouter ${model} ${res.status}: ${err.slice(0, 200)}`);
+					}
+				} catch (e) {
+					console.log(`[summarizer] OpenRouter ${model} error: ${e instanceof Error ? e.message : String(e)}`);
+				}
+				return undefined;
+			},
+		});
 	}
 
 	if (env.OLLAMA_BASE_URL && env.OLLAMA_API_KEY && env.OLLAMA_API_KEY !== "placeholder") {
 		const model = env.OLLAMA_MODEL || "gpt-oss:120b";
-		try {
-			const res = await fetch(`${env.OLLAMA_BASE_URL}/api/chat`, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Authorization: `Bearer ${env.OLLAMA_API_KEY}`,
-				},
-				body: JSON.stringify({
-					model,
-					stream: false,
-					messages: [
-						{ role: "system", content: SUMMARY_SYSTEM_PROMPT },
-						{ role: "user", content: `Here is the meeting transcript:\n\n${transcriptText}` },
-					],
-				}),
-			});
-			if (res.ok) {
-				const oj = await res.json() as { message?: { content?: string } };
-				return oj.message?.content;
-			}
-		} catch (e) {
-			console.log("[summarizer] Ollama error:", e instanceof Error ? e.message : String(e));
+		allProviders.push({
+			label: `Ollama ${model}`,
+			run: async () => {
+				try {
+					const res = await fetch(`${env.OLLAMA_BASE_URL}/api/chat`, {
+						method: "POST",
+						headers: {
+							"Content-Type": "application/json",
+							Authorization: `Bearer ${env.OLLAMA_API_KEY}`,
+						},
+						body: JSON.stringify({
+							model,
+							stream: false,
+							messages: [
+								{ role: "system", content: systemPrompt },
+								{ role: "user", content: `Here is the meeting transcript:\n\n${transcriptText}` },
+							],
+						}),
+					});
+					if (res.ok) {
+						const oj = await res.json() as { message?: { content?: string } };
+						return oj.message?.content;
+					}
+				} catch (e) {
+					console.log(`[summarizer] Ollama error: ${e instanceof Error ? e.message : String(e)}`);
+				}
+				return undefined;
+			},
+		});
+	}
+
+	for (const provider of allProviders) {
+		const result = await provider.run();
+		if (result && isValidSummary(result)) {
+			return result;
+		}
+		if (result) {
+			console.log(`[summarizer] ${provider.label} produced invalid summary (${result.length} chars), trying next provider`);
 		}
 	}
 
 	return undefined;
+}
+
+function isValidSummary(text: string): boolean {
+	const trimmed = text.trim();
+	if (trimmed.length < 100) return false;
+	const words = trimmed.split(/\s+/).filter((w) => w.length > 0);
+	if (words.length < 30) return false;
+	if (!trimmed.includes("##") && !trimmed.includes("# ")) return false;
+	return true;
 }

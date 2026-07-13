@@ -9,3 +9,6 @@ id = "fb0937accb414d98a8b9f84d81a6506a"
 [[r2_buckets]]
 binding = "RECORDINGS_BUCKET"
 bucket_name = "ve-room"
+
+[vars]
+SMTP_API_URL = "https://ve-call.exe.xyz/smtp-api"

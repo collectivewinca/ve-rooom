@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { fetchMeetings, type MeetingWithSessions, type MeetingSession, type MeetingParticipant } from "../lib/api";
+import { fetchMeetings, type MeetingWithSessions, type MeetingSession } from "../lib/api";
 
 function formatDate(dateStr?: string): string {
 	if (!dateStr) return "—";
@@ -81,8 +81,8 @@ export default function Dashboard() {
 		? meetings.filter((m) => (m.title || "").toLowerCase().includes(searchQuery.toLowerCase()))
 		: meetings;
 
-	const activeCount = meetings.filter((m) => m.status === "ACTIVE").length;
-	const endedCount = meetings.filter((m) => m.status !== "ACTIVE").length;
+	const activeCount = meetings.filter((m) => m.sessions.some((s) => s.status !== "ENDED")).length;
+	const endedCount = meetings.filter((m) => !m.sessions.some((s) => s.status !== "ENDED")).length;
 	const totalSessions = meetings.reduce((sum, m) => sum + m.sessions.length, 0);
 	const totalRecordings = meetings.reduce(
 		(sum, m) => sum + m.sessions.reduce((s, sess) => s + sess.recordings.length, 0),
@@ -169,24 +169,21 @@ export default function Dashboard() {
 			{filteredMeetings.length > 0 && (
 				<div className="meeting-list">
 					{filteredMeetings.map((m) => {
-						const isExpanded = expanded.has(m.id);
-						const sessionCount = m.sessions.length;
-						const recordingCount = m.sessions.reduce((s, sess) => s + sess.recordings.length, 0);
-						const hasEndedSession = m.sessions.some((s) => s.status === "ENDED");
-						const isLive = m.status === "ACTIVE";
+				const isExpanded = expanded.has(m.id);
+					const sessionCount = m.sessions.length;
+					const recordingCount = m.sessions.reduce((s, sess) => s + sess.recordings.length, 0);
+					const hasEndedSession = m.sessions.some((s) => s.status === "ENDED");
+					const isLive = m.sessions.some((s) => s.status !== "ENDED" && s.status !== "INIT");
 
 					return (
 						<div key={m.id} className={`meeting-card ${isExpanded ? "expanded" : ""}`}>
 							<div className="meeting-card-header" onClick={() => toggleExpand(m.id)}>
 								<div className="meeting-card-info">
-									<div className="meeting-card-title-row">
-										<h3>{m.title || "Untitled Meeting"}</h3>
+								<div className="meeting-card-title-row">
+									<h3>{m.title || "Untitled Meeting"}</h3>
 										<span className={`meeting-status-badge ${isLive ? "active" : "ended"}`}>
 											{isLive ? "● Active" : "Ended"}
 										</span>
-										{m.hasCachedSummary && (
-											<span className="cache-badge" title="Summary cached in KV">✓ Cached</span>
-										)}
 									</div>
 									<div className="meeting-card-meta">
 										<span className="meta-date">{formatDate(m.created_at)}</span>
@@ -218,18 +215,18 @@ export default function Dashboard() {
 										)}
 									</div>
 								</div>
-									<div className="meeting-card-actions" onClick={(e) => e.stopPropagation()}>
+									<div className="meeting-card-actions">
 										{hasEndedSession && (
-											<Link to={`/summary/${m.id}`} className="btn-link">
+											<Link to={`/summary/${m.id}`} className="btn-link" onClick={(e) => e.stopPropagation()}>
 												View Summary
 											</Link>
 										)}
 										{isLive && (
-											<Link to={`/meeting/${m.id}`} className="btn-link btn-join">
+											<Link to={`/meeting/${m.id}`} className="btn-link btn-join" onClick={(e) => e.stopPropagation()}>
 												Join
 											</Link>
 										)}
-										<button className="expand-toggle" aria-label={isExpanded ? "Collapse" : "Expand"}>
+										<button className="expand-toggle" aria-label={isExpanded ? "Collapse" : "Expand"} onClick={(e) => { e.stopPropagation(); toggleExpand(m.id); }}>
 											<svg width="16" height="16" viewBox="0 0 16 16" fill="none"
 												style={{ transform: isExpanded ? "rotate(180deg)" : "none", transition: "transform 0.2s" }}>
 												<path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
@@ -272,18 +269,6 @@ export default function Dashboard() {
 												))}
 											</div>
 										)}
-
-										<div className="meeting-config">
-											<span className={`config-tag ${m.transcribe_on_end ? "on" : "off"}`}>
-												{m.transcribe_on_end ? "✓" : "✕"} Transcribe
-											</span>
-											<span className={`config-tag ${m.summarize_on_end ? "on" : "off"}`}>
-												{m.summarize_on_end ? "✓" : "✕"} Summarize
-											</span>
-											<span className={`config-tag ${m.record_on_start ? "on" : "off"}`}>
-												{m.record_on_start ? "✓" : "✕"} Auto-record
-											</span>
-										</div>
 									</div>
 								)}
 							</div>
@@ -300,8 +285,6 @@ function SessionRow({ session, meetingId }: { session: MeetingSession; meetingId
 	const duration = formatDuration(session.created_at, session.ended_at);
 	const compositeRecs = session.recordings.filter((r) => r.type === "composite");
 	const hasUploaded = session.recordings.some((r) => r.status === "UPLOADED");
-	const totalRecDuration = session.recordings.reduce((sum, r) => sum + (r.recording_duration || 0), 0);
-	const recDurationStr = totalRecDuration > 0 ? formatDuration(undefined, new Date(totalRecDuration * 1000).toISOString()) : "";
 
 	return (
 		<div className={`session-row ${statusInfo.cls}`}>
@@ -331,40 +314,21 @@ function SessionRow({ session, meetingId }: { session: MeetingSession; meetingId
 							{session.participant_count}
 						</span>
 					)}
-					{recDurationStr && (
-						<span className="session-detail">
-							<span className="session-detail-label">Recording</span>
-							{recDurationStr}
-						</span>
-					)}
 				</div>
-				{session.transcription_minutes != null && session.transcription_minutes > 0 ? (
-					<div className="session-transcription-status">
-						<span className="transcription-badge transcribed">✓ Transcribed ({session.transcription_minutes.toFixed(1)} min)</span>
-					</div>
-				) : session.recording_minutes != null && session.recording_minutes > 0 ? (
-					<div className="session-transcription-status">
-						<span className="transcription-badge not-transcribed">✕ Not transcribed</span>
-					</div>
-				) : null}
 			</div>
 
 			<div className="session-row-recordings">
 				{session.recordings.length === 0 ? (
 					<span className="no-recordings">No recordings</span>
 				) : (
-					<>
-						{compositeRecs.length > 0 && (
-							<div className="recording-group">
-								<span className="recording-type">Recording</span>
-								{compositeRecs.map((r) => (
-									<span key={r.id} className={`recording-badge ${r.status.toLowerCase()}`}>
-										{recordingStatusIcon(r.status)}
-									</span>
-								))}
-							</div>
-						)}
-					</>
+					<div className="recording-group">
+						<span className="recording-type">Recording</span>
+						{compositeRecs.map((r) => (
+							<span key={r.id} className={`recording-badge ${r.status.toLowerCase()}`}>
+								{recordingStatusIcon(r.status)}
+							</span>
+						))}
+					</div>
 				)}
 			</div>
 

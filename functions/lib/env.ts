@@ -9,6 +9,7 @@ export interface AppEnv {
 	OLLAMA_BASE_URL: string;
 	OLLAMA_MODEL?: string;
 	FORMSDB_URL?: string;
+	SMTP_API_URL: string;
 	MEETING_CACHE: KVNamespace;
 	RECORDINGS_BUCKET: R2Bucket;
 }

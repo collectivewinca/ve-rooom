@@ -100,6 +100,16 @@
 	transform: translateY(-1px);
 }
 
+.summary-link-loading {
+	cursor: default;
+	opacity: 0.85;
+}
+
+.summary-link-loading:hover {
+	background: rgba(251, 191, 36, 0.9);
+	transform: none;
+}
+
 .meeting-loading,
 .meeting-error {
 	display: flex;

@@ -16,6 +16,12 @@ export interface CachedResult {
 	cachedAt: string;
 }
 
+export interface SummaryVersion {
+	summary: string;
+	prompt?: string;
+	createdAt: string;
+}
+
 export interface RecordingRef {
 	key: string;
 	url: string;
@@ -126,6 +132,66 @@ export async function getUserMeetings(kv: KVNamespace, email: string): Promise<s
 		const raw = await kv.get(`user:${email}:meetings`);
 		if (!raw) return [];
 		return JSON.parse(raw) as string[];
+	} catch {
+		return [];
+	}
+}
+
+export async function getUserPrompt(kv: KVNamespace, email: string): Promise<string | null> {
+	try {
+		const raw = await kv.get(`user:${email}:prompt`);
+		return raw || null;
+	} catch {
+		return null;
+	}
+}
+
+export async function saveUserPrompt(kv: KVNamespace, email: string, prompt: string): Promise<void> {
+	try {
+		await kv.put(`user:${email}:prompt`, prompt);
+		console.log("[kv] Saved user prompt for", email, `(${prompt.length} chars)`);
+	} catch (e) {
+		console.log("[kv] Save user prompt error:", e);
+	}
+}
+
+export async function getMeetingPrompt(kv: KVNamespace, meetingId: string): Promise<string | null> {
+	try {
+		const raw = await kv.get(`meeting:${meetingId}:prompt`);
+		return raw || null;
+	} catch {
+		return null;
+	}
+}
+
+export async function saveMeetingPrompt(kv: KVNamespace, meetingId: string, prompt: string): Promise<void> {
+	try {
+		await kv.put(`meeting:${meetingId}:prompt`, prompt);
+		console.log("[kv] Saved meeting prompt for", meetingId, `(${prompt.length} chars)`);
+	} catch (e) {
+		console.log("[kv] Save meeting prompt error:", e);
+	}
+}
+
+export async function addSummaryVersion(kv: KVNamespace, meetingId: string, version: SummaryVersion): Promise<void> {
+	try {
+		const key = `meeting:${meetingId}:history`;
+		const raw = await kv.get(key);
+		const list: SummaryVersion[] = raw ? JSON.parse(raw) : [];
+		list.push(version);
+		if (list.length > 50) list.shift();
+		await kv.put(key, JSON.stringify(list));
+		console.log("[kv] Added summary version for", meetingId, "— total:", list.length);
+	} catch (e) {
+		console.log("[kv] Add summary version error:", e);
+	}
+}
+
+export async function getSummaryHistory(kv: KVNamespace, meetingId: string): Promise<SummaryVersion[]> {
+	try {
+		const raw = await kv.get(`meeting:${meetingId}:history`);
+		if (!raw) return [];
+		return JSON.parse(raw) as SummaryVersion[];
 	} catch {
 		return [];
 	}
