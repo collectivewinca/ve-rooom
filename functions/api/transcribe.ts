@@ -57,8 +57,8 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 	const rl = await checkRateLimit(env.MEETING_CACHE, request);
 	if (!rl.allowed) return jsonResponse(429, { error: "Too many requests. Please slow down." });
 
-	const body = await request.json() as { meetingId: string; audioUrl: string; trackFiles?: { filename: string; downloadUrl: string; userId: string; peerId: string }[] };
-	console.log("[transcribe.ts] POST — meetingId:", body.meetingId, "audioUrl:", body.audioUrl ? "found" : "none", "trackFiles:", body.trackFiles?.length || 0);
+	const body = await request.json() as { meetingId: string; audioUrl: string };
+	console.log("[transcribe.ts] POST — meetingId:", body.meetingId, "audioUrl:", body.audioUrl ? "found" : "none");
 
 	const existing = await getCachedResult(env.MEETING_CACHE, body.meetingId);
 	if (existing && existing.transcript) {
@@ -89,48 +89,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 
 	let transcriptText = "";
 
-	if (body.trackFiles && body.trackFiles.length > 0 && !partial) {
-		console.log("[transcribe.ts] Trying Whisper on", body.trackFiles.length, "track files");
-		const participantTranscripts: string[] = [];
-
-		for (const track of body.trackFiles) {
-			if (Date.now() - startTime > TIME_BUDGET_MS) {
-				console.log("[transcribe.ts] Time budget exceeded during track files — returning partial");
-				break;
-			}
-			try {
-				const trackSize = await getAudioSize(track.downloadUrl);
-				const sizeMb = trackSize / (1024 * 1024);
-				console.log("[transcribe.ts] Track", track.userId, "size:", sizeMb.toFixed(1), "MB");
-				if (sizeMb > 25 || trackSize === 0) continue;
-
-				const audioRes = await fetch(track.downloadUrl, { headers: { Range: `bytes=0-${trackSize - 1}` } });
-				if (!audioRes.ok) continue;
-				const audioBuffer = await audioRes.arrayBuffer();
-				const whisperRes = await fetch(`${RTK_BASE}/${env.CF_ACCOUNT_ID}/ai/run/@cf/openai/whisper`, {
-					method: "POST",
-					headers: { ...authHeaders, "Content-Type": "audio/webm" },
-					body: audioBuffer,
-				});
-
-				if (whisperRes.ok) {
-					const wj = await whisperRes.json() as { result?: { text?: string } };
-					const wt = wj.result?.text?.trim();
-					console.log("[transcribe.ts] Track", track.userId, "transcript:", wt?.length || 0, "chars");
-					if (wt && wt.length > 50 && !isHallucination(wt)) {
-						participantTranscripts.push(`[Participant ${track.userId}]: ${wt}`);
-					}
-				}
-			} catch (e) {
-				console.log("[transcribe.ts] Track error:", e instanceof Error ? e.message : String(e));
-			}
-		}
-		if (participantTranscripts.length > 0) {
-			transcriptText = participantTranscripts.join("\n\n");
-		}
-	}
-
-	if (transcriptText.trim().length === 0 && body.audioUrl) {
+	if (body.audioUrl) {
 		console.log("[transcribe.ts] Trying Whisper on composite MP3");
 		try {
 			const totalSize = partial?.totalSize ?? await getAudioSize(body.audioUrl);

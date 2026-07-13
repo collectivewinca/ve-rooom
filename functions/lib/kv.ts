@@ -16,6 +16,33 @@ export interface CachedResult {
 	cachedAt: string;
 }
 
+export interface RecordingRef {
+	key: string;
+	url: string;
+	type: "composite" | "audio";
+	size?: number;
+	uploadedAt?: string;
+}
+
+export async function saveRecordingRefs(kv: KVNamespace, meetingId: string, refs: RecordingRef[]): Promise<void> {
+	try {
+		await kv.put(`meeting:${meetingId}:recordings`, JSON.stringify(refs));
+		console.log("[kv] Saved", refs.length, "recording refs for meeting", meetingId);
+	} catch (e) {
+		console.log("[kv] Save recording refs error:", e);
+	}
+}
+
+export async function getRecordingRefs(kv: KVNamespace, meetingId: string): Promise<RecordingRef[]> {
+	try {
+		const raw = await kv.get(`meeting:${meetingId}:recordings`);
+		if (!raw) return [];
+		return JSON.parse(raw) as RecordingRef[];
+	} catch {
+		return [];
+	}
+}
+
 export async function saveMeetingMeta(kv: KVNamespace, meetingId: string, meta: MeetingMeta): Promise<void> {
 	try {
 		await kv.put(`meeting:${meetingId}:meta`, JSON.stringify(meta));

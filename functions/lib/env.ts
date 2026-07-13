@@ -10,4 +10,5 @@ export interface AppEnv {
 	OLLAMA_MODEL?: string;
 	FORMSDB_URL?: string;
 	MEETING_CACHE: KVNamespace;
+	RECORDINGS_BUCKET: R2Bucket;
 }

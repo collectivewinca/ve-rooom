@@ -1,4 +1,4 @@
-import { getCachedResult, getMeetingMeta, getParticipants, saveCachedResult } from "../../lib/kv";
+import { getCachedResult, getMeetingMeta, getParticipants, saveCachedResult, getRecordingRefs } from "../../lib/kv";
 import { jsonResponse } from "../../lib/response";
 import { checkRateLimit } from "../../lib/rate-limit";
 import { parseSessionRecordings } from "../../lib/recordings";
@@ -49,6 +49,12 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env })
 	}
 
 	const cached = await getCachedResult(env.MEETING_CACHE, meetingId);
+	const r2Refs = await getRecordingRefs(env.MEETING_CACHE, meetingId);
+	const hasR2 = r2Refs.length > 0;
+	if (hasR2) console.log("[summary.ts] R2 recording refs:", r2Refs.length, "for meeting", meetingId);
+
+	const r2RecordingUrl = r2Refs.find((r) => r.type === "composite")?.url;
+	const r2AudioUrl = r2Refs.find((r) => r.type === "audio")?.url;
 
 	async function fetchRecordings() {
 		return fetch(
@@ -84,9 +90,9 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env })
 			status: "ok",
 			summary: cached.summary,
 			transcriptUrl,
-			recordingUrl: parsed.recordingUrl,
-			audioRecordingUrl: parsed.audioRecordingUrl,
-			trackFiles: parsed.trackFiles.length > 0 ? parsed.trackFiles : undefined,
+			recordingUrl: parsed.recordingUrl || r2RecordingUrl,
+			audioRecordingUrl: parsed.audioRecordingUrl || r2AudioUrl,
+			r2Recordings: hasR2 ? r2Refs : undefined,
 			sessionId: session.id,
 			transcript_text: cached.transcript,
 			cachedAt: cached.cachedAt,
@@ -108,9 +114,9 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env })
 		return jsonResponse(200, {
 			status: summary ? "ok" : "no_summary",
 			summary,
-			recordingUrl: parsed.recordingUrl,
-			audioRecordingUrl: parsed.audioRecordingUrl,
-			trackFiles: parsed.trackFiles.length > 0 ? parsed.trackFiles : undefined,
+			recordingUrl: parsed.recordingUrl || r2RecordingUrl,
+			audioRecordingUrl: parsed.audioRecordingUrl || r2AudioUrl,
+			r2Recordings: hasR2 ? r2Refs : undefined,
 			sessionId: session.id,
 			transcript_text: cached.transcript,
 		});
@@ -138,9 +144,9 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env })
 			status: summary ? "ok" : "no_summary",
 			summary,
 			transcriptUrl,
-			recordingUrl: parsed.recordingUrl,
-			audioRecordingUrl: parsed.audioRecordingUrl,
-			trackFiles: parsed.trackFiles.length > 0 ? parsed.trackFiles : undefined,
+			recordingUrl: parsed.recordingUrl || r2RecordingUrl,
+			audioRecordingUrl: parsed.audioRecordingUrl || r2AudioUrl,
+			r2Recordings: hasR2 ? r2Refs : undefined,
 			sessionId: session.id,
 			transcript_text: transcriptText,
 			sessionInfo: {
@@ -157,9 +163,9 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env })
 	return jsonResponse(200, {
 		status: "needs_transcription",
 		transcriptUrl,
-		recordingUrl: parsed.recordingUrl,
-		audioRecordingUrl: parsed.audioRecordingUrl,
-		trackFiles: parsed.trackFiles.length > 0 ? parsed.trackFiles : undefined,
+		recordingUrl: parsed.recordingUrl || r2RecordingUrl,
+		audioRecordingUrl: parsed.audioRecordingUrl || r2AudioUrl,
+		r2Recordings: hasR2 ? r2Refs : undefined,
 		sessionId: session.id,
 		transcript_text: transcriptText,
 		sessionInfo: {

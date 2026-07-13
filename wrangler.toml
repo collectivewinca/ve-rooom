@@ -5,3 +5,7 @@ pages_build_output_dir = "dist"
 [[kv_namespaces]]
 binding = "MEETING_CACHE"
 id = "fb0937accb414d98a8b9f84d81a6506a"
+
+[[r2_buckets]]
+binding = "RECORDINGS_BUCKET"
+bucket_name = "ve-room"

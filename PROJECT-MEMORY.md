@@ -165,7 +165,7 @@ A 106-minute recording (`jssa-amply.mp3`, 243MB) was used to test the transcript
 - Final chunk: saves full transcript to KV, deletes partial key, returns `transcribed`
 - ~7 Worker invocations for 1-hour meeting (~140s total, each under 30s limit)
 
-**Track recording issue:** Track recordings return `file_size: 0` and `download_url.links: []` for ALL meetings. This is a pre-existing RTK issue, not caused by our code changes. The `recordings/track.ts` endpoint is still called by `Meeting.tsx` but the track files are always empty. **Decision: keep the endpoint but don't rely on track files for transcription.** The composite MP3 fallback in `transcribe.ts` is the primary transcription source.
+**Track recording issue:** Track recordings return `file_size: 0` and `download_url.links: []` for ALL meetings. This is a pre-existing RTK issue, not caused by our code changes. **Decision (Jul 13): removed track recording entirely.** Deleted `functions/api/recordings/track.ts`, removed `TrackFile` types from `functions/lib/recordings.ts` and `src/lib/api.ts`, removed track file Whisper block from `functions/api/transcribe.ts`, removed `trackFiles` from all `summary/[id].ts` responses, removed track debug rows + download cards from `Summary.tsx`. The composite MP3 fallback in `transcribe.ts` is the sole transcription source. Speaker diarization on composite audio is a future feature (WhisperX/Deepgram/SarvamAI).
 
 ---
 
@@ -187,15 +187,17 @@ Cloudflare Pages Functions (Workers)
     ├── POST /api/recordings/stop — stop recordings (fallback; RTK auto-stops on ALL_PEERS_LEFT)
     ├── POST /api/transcribe — Whisper chunked transcription (10MB chunks, 25s time budget, KV partial resume)
     ├── POST /api/generate-summary — LLM summary from transcript
-    ├── GET  /api/summary/:id — RTK transcript → LLM summary (or needs_transcription → frontend triggers /api/transcribe)
+    ├── GET  /api/recording/[key] — Serve recording file from R2 (long-term storage, works after RTK 7-day expiry)
+    ├── POST /api/recording/scan — List R2 objects for a meeting, cache refs in KV
+    ├── GET  /api/summary/:id — RTK transcript → LLM summary, or needs_transcription → frontend triggers /api/transcribe. Falls back to R2 URLs when RTK recording URLs are missing.
     └── GET  /api/meetings — list all meetings
     │
     │ REST API →
     │
 Cloudflare RealtimeKit (managed SFU)
     ├── WebRTC media routing
-    ├── Composite recording (MP4 + MP3) → R2 (7-day expiry) — auto-starts on session start
-    ├── Track recording (WebM per participant) → R2 (7-day expiry) — empty files (RTK issue)
+    ├── Composite recording (MP4 + MP3) → R2 (via RTK auto-transfer) + RTK bucket (7-day expiry) — auto-starts on session start
+    ├── Track recording (WebM per participant) → REMOVED (RTK produced 0-byte files)
     ├── Transcription (transcribe_on_end) — returns 0-byte CSV (not working)
     └── Summary engine (summarize_on_end) — not producing summaries
     │
@@ -231,7 +233,7 @@ External services:
 | 17 | Silent recording detection | All chunks hallucinated → return `silent` status with "mic muted" message |
 | 18 | `stopAllRecordings` kept as fallback | RTK auto-stops on ALL_PEERS_LEFT, but client-side stop ensures clean shutdown |
 | 19 | RTK native transcription is non-functional | `transcription_minutes_consumed: 0` for ALL sessions. Whisper on composite MP3 is the actual transcription path |
-| 20 | Track recordings are empty (RTK issue) | `file_size: 0` for all track recordings. Composite MP3 fallback is primary transcription source |
+| 20 | Track recordings removed (Jul 13) | `file_size: 0` for all track recordings. Track endpoint, types, and transcription logic removed. Composite MP3 is the sole transcription source. Diarization on composite audio is a future feature. |
 
 ---
 
@@ -311,8 +313,10 @@ functions/
     ├── rooms/[id]/participants.ts # POST → join existing room
     ├── recordings/
     │   ├── start.ts             # POST → composite recording (kept for manual start if needed)
-    │   ├── track.ts             # POST → track recording (produces empty files — RTK issue)
     │   └── stop.ts              # POST → stop all recordings (fallback on roomLeft)
+    ├── recording/
+    │   ├── [key]/index.ts       # GET → serve recording file from R2 by object key
+    │   └── scan.ts              # POST → list R2 objects for a meeting, cache refs in KV
     ├── transcribe.ts            # POST → chunked Whisper (10MB chunks, 25s budget, KV partial resume, silent detection)
     ├── generate-summary.ts      # POST → LLM summary from transcript text
     ├── summary/[id].ts          # GET → RTK transcript → summary, or needs_transcription
@@ -364,6 +368,7 @@ test_ollama.py / test_whisper.py  # Local test scripts
 | `CF_ACCOUNT_ID` | Yes | Cloudflare account ID |
 | `CF_API_TOKEN` | Yes | CF API token — needs Realtime admin **+ Workers AI:Run** scope |
 | `RTK_APP_ID` | Yes | RealtimeKit app ID |
+| `RECORDINGS_BUCKET` | Auto | R2 bucket binding (`ve-room`) — auto-configured via wrangler.toml, no secret needed |
 | `OPENROUTER_API_KEY` | Yes | OpenRouter API key (free models available) |
 | `OPENROUTER_MODEL` | No | Primary model (default: `openrouter/free`) |
 | `OPENROUTER_FREE_MODEL` | No | Fallback model (default: `openrouter/free`) |
@@ -587,7 +592,8 @@ RealtimeKit REST API does NOT support deleting meetings, recordings, or sessions
 ### ❌ Not Done / Known Issues
 - [ ] RTK native transcription (`transcribe_on_end`) not working — returns 0-byte CSV for all sessions
 - [ ] Track recordings produce empty files (`file_size: 0`) — RTK issue, not our code
-- [ ] Track recording `layers` field required despite docs saying optional
+- [x] **Track recording code removed (Jul 13)** — endpoint, types, transcription logic all deleted. Composite MP3 is sole transcription source.
+- [x] **R2 long-term recording storage (Jul 13)** — `ve-room` R2 bucket bound via wrangler.toml. RTK dashboard configured for auto-transfer. `/api/recording/[key]` serves from R2. `/api/recording/scan` lists R2 objects by meeting ID prefix and caches refs in KV. `summary/[id].ts` falls back to R2 URLs when RTK URLs expire (7 days). `Summary.tsx` auto-scans R2 when RTK recording URLs are missing.
 - [ ] End-to-end test with real multi-person conversation (current tests were solo or 2-person)
 - [ ] Ollama Cloud API key renewal (using OpenRouter as primary)
 - [ ] Custom domain (e.g., `ve-rooom.com`)

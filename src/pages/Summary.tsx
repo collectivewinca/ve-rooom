@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate, Link, useSearchParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
-import { getSummary, transcribeAudio, generateSummaryFromTranscript, type SummaryResponse } from "../lib/api";
+import { getSummary, transcribeAudio, generateSummaryFromTranscript, scanR2Recordings, type SummaryResponse } from "../lib/api";
 
 function generateTranscriptCsvUrl(text: string): string {
 	const lines = text.split("\n");
@@ -58,6 +58,18 @@ export default function Summary() {
 					}
 				} else {
 					setLoading(false);
+					if (!res.recordingUrl && !res.audioRecordingUrl) {
+						scanR2Recordings(roomId!).then((refs) => {
+							if (refs.length > 0 && !cancelled) {
+								setData((prev) => prev ? {
+									...prev,
+									recordingUrl: prev.recordingUrl || refs.find((r) => r.type === "composite")?.url,
+									audioRecordingUrl: prev.audioRecordingUrl || refs.find((r) => r.type === "audio")?.url,
+									r2Recordings: refs,
+								} : prev);
+							}
+						}).catch(() => {});
+					}
 				}
 			} catch (e) {
 				if (cancelled) return;
@@ -100,7 +112,7 @@ export default function Summary() {
 
 		setTranscribeStatus("Downloading audio and running Whisper transcription...");
 		try {
-			const result = await transcribeAudio(roomId, summaryData.audioRecordingUrl || "", summaryData.trackFiles);
+			const result = await transcribeAudio(roomId, summaryData.audioRecordingUrl || "");
 
 			if (result.status === "transcribed" && result.transcript) {
 				setTranscribeStatus("Transcript ready! Generating AI summary...");
@@ -153,7 +165,7 @@ export default function Summary() {
 		}
 	}
 
-	const hasDownloads = data?.transcriptUrl || data?.transcript_text || data?.recordingUrl || data?.audioRecordingUrl || (data?.trackFiles && data.trackFiles.length > 0);
+	const hasDownloads = data?.transcriptUrl || data?.transcript_text || data?.recordingUrl || data?.audioRecordingUrl;
 	const showSummary = (data?.status === "ok" && !!data.summary) || (data?.status === "silent" && !!data.summary) || (data?.status === "needs_transcription" && !!data.summary);
 	const showBlur = data && data.status !== "no_ended_session" && data.status !== "error" && data.status !== "silent" && !showSummary;
 
@@ -206,10 +218,8 @@ export default function Summary() {
 					{data.transcriptUrl && <div className="debug-row"><span className="debug-label">CF Transcript</span><span className="debug-value ok">URL found</span></div>}
 					{!data.transcriptUrl && <div className="debug-row"><span className="debug-label">CF Transcript</span><span className="debug-value warn">empty</span></div>}
 					{data.recordingUrl && <div className="debug-row"><span className="debug-label">Composite Recording</span><span className="debug-value ok">UPLOADED</span></div>}
-					{data.audioRecordingUrl && <div className="debug-row"><span className="debug-label">Audio MP3</span><span className="debug-value ok">available</span></div>}
-					{data.trackFiles && data.trackFiles.length > 0 && <div className="debug-row"><span className="debug-label">Track Files</span><span className="debug-value ok">{data.trackFiles.length} files</span></div>}
-					{!data.trackFiles && <div className="debug-row"><span className="debug-label">Track Files</span><span className="debug-value warn">none</span></div>}
-					{data.transcript_text && <div className="debug-row"><span className="debug-label">Transcript Text</span><span className="debug-value ok">{data.transcript_text.length} chars</span></div>}
+				{data.audioRecordingUrl && <div className="debug-row"><span className="debug-label">Audio MP3</span><span className="debug-value ok">available</span></div>}
+				{data.transcript_text && <div className="debug-row"><span className="debug-label">Transcript Text</span><span className="debug-value ok">{data.transcript_text.length} chars</span></div>}
 					{!data.transcript_text && <div className="debug-row"><span className="debug-label">Transcript Text</span><span className="debug-value warn">empty</span></div>}
 					{data.error && <div className="debug-row"><span className="debug-label">Error</span><span className="debug-value err">{data.error}</span></div>}
 				</div>
@@ -294,20 +304,6 @@ export default function Summary() {
 								</div>
 							</a>
 						)}
-						{data?.trackFiles?.map((track, i) => (
-							<a key={i} href={track.downloadUrl} target="_blank" rel="noreferrer" className="download-card">
-								<div className="download-card-icon" style={{ background: "rgba(251, 191, 36, 0.15)" }}>
-									<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-										<path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
-										<path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-									</svg>
-								</div>
-								<div className="download-card-info">
-									<div className="download-card-title">Participant {i + 1}</div>
-									<div className="download-card-subtitle">{track.userId.slice(0, 8)}… · WebM</div>
-								</div>
-							</a>
-						))}
 					</div>
 				</div>
 			)}
