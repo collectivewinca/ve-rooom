@@ -121,6 +121,52 @@ A 106-minute recording (`jssa-amply.mp3`, 243MB) was used to test the transcript
 - Fixed to only start after meeting is actually joined
 - Recording indicator simplified: just red blinking dot, no extra messages
 
+### Session 6: Refactor + auth token security (commit aa344f1, Jul 10)
+
+- DRY utils: `functions/lib/env.ts`, `response.ts`, `rate-limit.ts`, `recordings.ts`, `summarizer.ts`
+- Rate limiting via KV (30 req/60s per IP)
+- CSS split into `src/styles/*.css` (dashboard, home, meeting, navbar, shared, summary, variables)
+- Dashboard search + skeletons
+- ErrorBoundary component
+- **Critical regression**: `record_on_start` changed to `false`, `recording_config` removed from meeting creation → recordings became client-side API-triggered only
+
+### Session 7: Recording + transcription deep analytics fix (commit 6d80cb1, Jul 13)
+
+**Investigation:** Alet's meeting (yuga-v2, Jul 13) had no transcription. Deep analysis revealed:
+
+1. **RTK native transcription never worked** — `transcription_minutes_consumed: 0` for ALL sessions, `transcript_download_url` returns 0-byte CSV for every meeting including older "working" ones
+2. **Whisper on Alet's audio produced hallucination** — "Thank you. Thank you. Thank you." (219 chars) across all chunks. ffmpeg volumedetect showed `mean_volume: -91.0 dB, max_volume: -91.0 dB` — **digital silence**. Video was a frozen frame for 591/599s. Alet likely had mic muted or stayed on setup screen.
+3. **Hallucination filter had a bug** — `wt.length < 200` threshold let the 219-char "Thank you" repetition through
+4. **Track recordings produce empty files** — `file_size: 0` for ALL recent meetings (both Alet's and Garvit's). The `realtimekit_bucket_config` was removed from meeting creation in the refactor.
+5. **Root cause of recording regression**: Commit `00d5328` (Jul 7) changed `record_on_start: true → false` and removed `recording_config` from `rooms.ts`. Older meetings (JSSA, ve-room-july4) had `start_reason: RECORD_ON_START` and real audio. New meetings had `start_reason: API_CALL` with timing gaps.
+
+**Fixes applied (6 files, commit 6d80cb1):**
+
+| File | Fix |
+|---|---|
+| `functions/api/rooms.ts` | Reverted `record_on_start: true`, restored `recording_config` (bucket + MP3 codec) |
+| `src/pages/Meeting.tsx` | Removed manual `startCompositeRecording`/`startTrackRecording` calls, kept `stopAllRecordings` as fallback, `isRecording` starts `true` |
+| `functions/api/transcribe.ts` | 10 MB chunks with 25s time budget, partial progress saved to KV + resumes on retry, silent detection via hallucination repetition ratio, 200 MB max file size |
+| `functions/api/summary/[id].ts` | Generates summary server-side when transcript cached but no summary, returns `needs_transcription` for empty RTK transcript |
+| `src/pages/Summary.tsx` | Handles `silent` status (clear "microphone muted" message), `processing` status (auto-retry with progress), removed blur for silent meetings |
+| `src/lib/api.ts` | Added `silent` + `processing` status types, `numChunks`/`chunksDone`/`totalChunks` fields |
+
+**Hallucination filter (new algorithm):**
+- Word repetition ratio: `uniqueWords / totalWords < 0.15` → hallucination
+- Sentence repetition ratio: `uniqueSentences / totalSentences < 0.2` → hallucination
+- Applied to both track-file and composite-chunk Whisper paths
+
+**Large recording flow (1hr+ = ~140 MB at 320 kb/s):**
+- 10 MB chunks = 14 chunks for 1-hour meeting
+- 25s time budget per Worker invocation = ~2 chunks per call
+- Partial progress saved to KV key `meeting:{id}:partial`
+- Frontend receives `processing` status, auto-retries after 3s
+- Worker reads partial from KV, resumes from last chunk
+- Final chunk: saves full transcript to KV, deletes partial key, returns `transcribed`
+- ~7 Worker invocations for 1-hour meeting (~140s total, each under 30s limit)
+
+**Track recording issue:** Track recordings return `file_size: 0` and `download_url.links: []` for ALL meetings. This is a pre-existing RTK issue, not caused by our code changes. The `recordings/track.ts` endpoint is still called by `Meeting.tsx` but the track files are always empty. **Decision: keep the endpoint but don't rely on track files for transcription.** The composite MP3 fallback in `transcribe.ts` is the primary transcription source.
+
 ---
 
 ## 3. Architecture Summary
@@ -130,31 +176,33 @@ Browser (React SPA)
     │
     ├── Home (/) — create or join meeting
     ├── Dashboard (/dashboard) — past meetings list
-    ├── Meeting (/meeting/:roomId) — <RtkMeeting> + 5s auto-start recordings
+    ├── Meeting (/meeting/:roomId) — <RtkMeeting> + recording indicator (RTK auto-records)
     └── Summary (/summary/:roomId) — polls API, renders Markdown + downloads
     │
     │ fetch() →
     │
 Cloudflare Pages Functions (Workers)
-    ├── POST /api/rooms — create meeting + host participant
+    ├── POST /api/rooms — create meeting (record_on_start: true + recording_config)
     ├── POST /api/rooms/:id/participants — join meeting
-    ├── POST /api/recordings/start — composite recording (dedup)
-    ├── POST /api/recordings/track — per-participant WebM (dedup)
-    ├── GET  /api/summary/:id — 3-source transcript → 3-tier summary
+    ├── POST /api/recordings/stop — stop recordings (fallback; RTK auto-stops on ALL_PEERS_LEFT)
+    ├── POST /api/transcribe — Whisper chunked transcription (10MB chunks, 25s time budget, KV partial resume)
+    ├── POST /api/generate-summary — LLM summary from transcript
+    ├── GET  /api/summary/:id — RTK transcript → LLM summary (or needs_transcription → frontend triggers /api/transcribe)
     └── GET  /api/meetings — list all meetings
     │
     │ REST API →
     │
 Cloudflare RealtimeKit (managed SFU)
     ├── WebRTC media routing
-    ├── Composite recording (MP4 + MP3) → R2 (7-day expiry)
-    ├── Track recording (WebM per participant) → GCS (7-day expiry)
-    ├── Transcription (Whisper Large v3 Turbo via Workers AI)
-    └── Summary engine (built-in, optional)
+    ├── Composite recording (MP4 + MP3) → R2 (7-day expiry) — auto-starts on session start
+    ├── Track recording (WebM per participant) → R2 (7-day expiry) — empty files (RTK issue)
+    ├── Transcription (transcribe_on_end) — returns 0-byte CSV (not working)
+    └── Summary engine (summarize_on_end) — not producing summaries
     │
 External services:
     ├── OpenRouter (openrouter/free) — primary summary LLM
     ├── Ollama Cloud (gpt-oss:120b) — fallback summary LLM
+    ├── Cloudflare Workers AI (whisper-large-v3-turbo) — transcription
     └── PocketBase (formsdb.exe.xyz) — Google OAuth gateway
 ```
 
@@ -165,8 +213,8 @@ External services:
 | # | Decision | Why |
 |---|---|---|
 | 1 | RealtimeKit over forking cloudflare/meet | Built-in recording/transcript/summary = days not weeks |
-| 2 | Dual recording (composite + track) | Composite for video playback; track for per-speaker audio (no diarization needed) |
-| 3 | `record_on_start: false` + 5s manual auto-start | Server-side dedup prevents N recordings from N participants |
+| 2 | `record_on_start: true` (reverted Jul 13) | RTK auto-records when session starts — more reliable than client-side API calls. Commit 00d5328 changed it to false which caused silent/empty recordings. |
+| 3 | `recording_config` on meeting creation | Bucket config + MP3 codec must be set at meeting creation time, not at API-triggered recording start |
 | 4 | `allow_multiple_recordings: true` | Required for composite + track to run concurrently |
 | 5 | Post-meeting Whisper only (no live captions) | 47 Neurons/min vs 836 for real-time Deepgram — 18x cheaper |
 | 6 | Poll on demand for summary (no webhooks) | Simpler, no public URL needed for MVP |
@@ -176,8 +224,14 @@ External services:
 | 10 | Top-level sessions/recordings API | `/sessions?meeting_id=` not `/meetings/{id}/sessions` |
 | 11 | Central PocketBase auth | One Google OAuth client for all projects |
 | 12 | Track dedup by `.webm` extension | `type` field is always empty in CF list response |
-| 13 | Force `language: "en"` in Whisper | Prevents misdetection on silence-heavy audio |
-| 14 | `meetingRef` pattern in useEffect | Survives React.StrictMode double-mount without duplicate recording starts |
+| 13 | 10 MB Whisper chunks (reduced from 20 MB) | Faster per-chunk processing (~7s), more chunks fit in 25s time budget |
+| 14 | 25s time budget per Worker invocation | CF Pages Functions have 30s wall-clock limit — stay under it |
+| 15 | Partial progress in KV for large files | `meeting:{id}:partial` key stores chunk index + transcript parts, resumes on retry |
+| 16 | Hallucination filter via repetition ratio | Word ratio < 0.15 or sentence ratio < 0.2 = hallucination. Old filter (`wt.length < 200`) let 219-char "Thank you" through |
+| 17 | Silent recording detection | All chunks hallucinated → return `silent` status with "mic muted" message |
+| 18 | `stopAllRecordings` kept as fallback | RTK auto-stops on ALL_PEERS_LEFT, but client-side stop ensures clean shutdown |
+| 19 | RTK native transcription is non-functional | `transcription_minutes_consumed: 0` for ALL sessions. Whisper on composite MP3 is the actual transcription path |
+| 20 | Track recordings are empty (RTK issue) | `file_size: 0` for all track recordings. Composite MP3 fallback is primary transcription source |
 
 ---
 
@@ -217,35 +271,51 @@ External services:
 src/
 ├── App.tsx                      # Routes: /, /dashboard, /meeting/:roomId, /summary/:roomId
 ├── main.tsx                     # React entry point
-├── index.css                    # Global resets + dark theme base
-├── pages.css                    # Full design system (~1400 lines, golden gradient + responsive)
 ├── components/
-│   └── Layout.tsx               # Glassmorphic navbar with auth controls (skips /meeting/*)
+│   ├── Layout.tsx               # Glassmorphic navbar with auth controls (skips /meeting/*)
+│   └── ErrorBoundary.tsx        # React error boundary
 ├── lib/
-│   ├── api.ts                   # Frontend fetch helpers + types (trackFiles, recording start)
+│   ├── api.ts                   # Frontend fetch helpers + types (silent/processing status)
 │   ├── formsdb-auth.js          # Central Google auth via PocketBase (drop-in, zero deps)
 │   ├── formsdb-auth.d.ts        # TS declarations for auth module
 │   └── useAuth.ts               # React hook for auth state
-└── pages/
-    ├── Home.tsx                 # Create/join meeting with tab toggle + feature badges
-    ├── Meeting.tsx              # RtkMeeting + 5s auto-start + recording indicator + share link
-    ├── Summary.tsx              # Polls 5s (max 60), blur overlay, Markdown + download cards
-    └── Dashboard.tsx            # Past meetings with stats cards
+├── pages/
+│   ├── Home.tsx                 # Create/join meeting with tab toggle + feature badges
+│   ├── Meeting.tsx              # RtkMeeting + recording indicator (RTK auto-records) + stop fallback
+│   ├── Summary.tsx              # Polls, handles silent/processing/needs_transcription, Markdown + downloads
+│   └── Dashboard.tsx            # Past meetings with stats cards + search
+└── styles/
+    ├── variables.css            # CSS custom properties (colors, spacing)
+    ├── shared.css               # Base styles, buttons, forms
+    ├── navbar.css               # Glassmorphic navbar
+    ├── home.css                 # Home page styles
+    ├── meeting.css              # Meeting page + recording indicator
+    ├── dashboard.css            # Dashboard grid + cards
+    └── summary.css              # Summary page + download cards + blur overlay
 ```
 
 ### Backend (Pages Functions)
 ```
 functions/
 ├── env.d.ts                     # Env interface for Workers
+├── auth.ts                      # verifyAuthToken via PocketBase
+├── lib/
+│   ├── env.ts                   # AppEnv interface
+│   ├── kv.ts                    # MeetingMeta, ParticipantRecord, CachedResult helpers
+│   ├── response.ts              # jsonResponse() helper
+│   ├── rate-limit.ts            # checkRateLimit() via KV (30 req/60s)
+│   ├── recordings.ts            # parseSessionRecordings() + TrackFile types
+│   └── summarizer.ts            # generateSummary() — OpenRouter → Ollama fallback
 └── api/
-    ├── rooms.ts                 # POST → create meeting (record_on_start:false, transcribe_on_end, summarize_on_end)
-    ├── rooms/[id]/
-    │   └── participants.ts      # POST → join existing room
+    ├── rooms.ts                 # POST → create meeting (record_on_start: true + recording_config)
+    ├── rooms/[id]/participants.ts # POST → join existing room
     ├── recordings/
-    │   ├── start.ts             # POST → composite recording (dedup + allow_multiple)
-    │   └── track.ts             # POST → track recording (per-participant WebM, dedup)
-    ├── summary/
-    │   └── [id].ts              # GET → 3-source transcript → OpenRouter → Ollama → CF summary
+    │   ├── start.ts             # POST → composite recording (kept for manual start if needed)
+    │   ├── track.ts             # POST → track recording (produces empty files — RTK issue)
+    │   └── stop.ts              # POST → stop all recordings (fallback on roomLeft)
+    ├── transcribe.ts            # POST → chunked Whisper (10MB chunks, 25s budget, KV partial resume, silent detection)
+    ├── generate-summary.ts      # POST → LLM summary from transcript text
+    ├── summary/[id].ts          # GET → RTK transcript → summary, or needs_transcription
     └── meetings.ts              # GET → list all meetings for dashboard
 ```
 
@@ -341,63 +411,75 @@ echo "value" | npx wrangler pages secret put VAR_NAME --project-name ve-rooom
 2. User clicks "New Meeting" with a room title
    → POST /api/rooms { name, roomTitle }
    → Worker calls CF: POST /realtime/kit/{app}/meetings
-     { record_on_start: false, transcribe_on_end: true, summarize_on_end: true,
+     { record_on_start: true, transcribe_on_end: true, summarize_on_end: true,
+       recording_config: { realtimekit_bucket_config: { enabled: true },
+                            audio_config: { codec: "MP3", export_file: true } },
        ai_config: { transcription: { language: "en-US" }, summarization: {...} } }
    → Worker calls CF: POST /realtime/kit/{app}/meetings/{id}/participants
      { name, preset_name: "group_call_host", custom_participant_id: uuid }
    → Returns { roomId, authToken }
-   → Navigate to /meeting/{roomId}?authToken={token}
+   → Navigate to /meeting/{roomId} (token stored in sessionStorage)
 
 3. Meeting page mounts
    → useRealtimeKitClient({ authToken }) → initMeeting()
    → <RtkMeeting> renders (camera, mic, screen share, participant grid)
    → User sees device setup screen first (camera/mic selection)
+   → RTK auto-starts recording on session start (record_on_start: true)
+   → Red pulsing recording indicator shows immediately
+   → "Copy Join Link" button → copies /?room={roomId} to clipboard
 
 4. User clicks Join (enters actual meeting)
-   → 5 seconds after meeting ready:
-     → POST /api/recordings/start { meetingId }  (composite MP4 + MP3)
-     → POST /api/recordings/track { meetingId }  (per-participant WebM)
-   → Server-side dedup: GET /recordings?meeting_id= → check for active
-   → Red pulsing recording indicator shows in UI
-   → "Copy Join Link" button → copies /?room={roomId} to clipboard
+   → RTK session starts, composite recording captures audio + video
+   → stopAllRecordings is wired to roomLeft event as a safety fallback
 
 5. Other participants join via shared link
    → Home page auto-fills room ID from ?room= param
    → POST /api/rooms/{id}/participants { name } → returns authToken
-   → Navigate to /meeting/{roomId}?authToken={token}
-   → Recording auto-start tries again → server dedup returns "alreadyStarted: true"
+   → Navigate to /meeting/{roomId} (token stored in sessionStorage)
 
 6. Meeting ends (all participants leave)
-   → CF RealtimeKit ends the session
-   → CF internal transcribe_on_end runs Whisper on participant tracks → transcript CSV in R2
-   → CF internal summarize_on_end generates built-in summary
+   → RTK stops recording (ALL_PEERS_LEFT)
+   → roomLeft event fires → client calls POST /api/recordings/stop (fallback)
+   → "Summary" link appears in meeting overlay
 
 7. User visits /summary/{roomId}
    → GET /api/summary/{roomId}
-   → Worker: GET /sessions?meeting_id={roomId} → find ENDED session
+   → Worker: GET /sessions?meeting_id={roomId} → find latest ENDED session
    → Worker: GET /sessions/{sessionId}/transcript → transcript_download_url
-   → Worker: fetch(transcript_download_url) → transcriptText
+   → Worker: fetch(transcript_download_url) → transcriptText (usually 0 bytes — RTK native transcription not working)
 
-   → IF transcriptText is empty (CF transcription failed or no speech):
-     → Source 2: GET /recordings?meeting_id= → find track files (.webm)
-     → For each .webm: fetch(downloadUrl) → base64 → Workers AI Whisper
-     → Prepend "[Participant {userId}]:" → merge all
-   → IF no track files:
-     → Source 3: fetch(composite MP3) → base64 → Workers AI Whisper
+   → IF transcriptText is empty:
+     → Returns { status: "needs_transcription", audioRecordingUrl, trackFiles }
+     → Frontend calls POST /api/transcribe { meetingId, audioUrl, trackFiles }
 
-   → Transcript → OpenRouter (openrouter/free) → 7-section Markdown summary
-   → IF OpenRouter fails → Ollama Cloud (gpt-oss:120b)
-   → IF Ollama fails → CF built-in summary
+   → transcribe.ts (Whisper fallback):
+     → IF cached transcript in KV → return it immediately
+     → IF track files exist → try Whisper on each (usually empty, skipped)
+     → IF composite audio URL → chunked Whisper:
+       → Probe audio size via Range header
+       → 10 MB chunks, 25s time budget per Worker invocation
+       → For each chunk: fetch Range → Workers AI whisper-large-v3-turbo
+       → Hallucination filter: word repetition ratio < 0.15, sentence ratio < 0.2
+       → IF time budget exceeded → save partial to KV, return { status: "processing" }
+       → Frontend auto-retries after 3s, Worker resumes from KV partial
+       → IF all chunks hallucinated → return { status: "silent" }
+       → IF transcript produced → save to KV, return { status: "transcribed" }
 
-   → Response: { status, summary, transcriptUrl, recordingUrl,
-                 audioRecordingUrl, trackFiles, transcript_text }
-   → Frontend polls every 5s (max 60 polls = 5 min)
+   → IF transcribed:
+     → Frontend calls POST /api/generate-summary { transcript, meetingId }
+     → Worker: generateSummary() → OpenRouter (openrouter/free) → Ollama fallback
+     → Save transcript + summary to KV
+     → Return { status: "ok", summary }
+
+   → IF silent:
+     → Display "Silent Recording" message: "No speech detected. Microphone may have been muted."
+     → Show recording download links for manual verification
+
    → Renders Markdown summary + download cards:
-     - Transcript CSV
-     - Full Transcript text
+     - Transcript CSV / TXT
      - Recording MP4 (composite video)
      - Audio MP3 (composite audio)
-     - Per-participant WebM files
+     - Per-participant WebM files (if any)
 
 8. User visits /dashboard
    → GET /api/meetings → list all meetings with status
@@ -484,24 +566,29 @@ RealtimeKit REST API does NOT support deleting meetings, recordings, or sessions
 
 ### ✅ Done
 - Video conferencing with 5+ participants
-- Composite recording (MP4 video + MP3 audio)
-- Track recording (per-participant WebM audio)
-- Server-side recording dedup
-- 3-source transcription pipeline (CF transcript → Whisper on WebM → Whisper on MP3)
-- 3-tier summary generation (OpenRouter → Ollama → CF built-in)
+- Composite recording (MP4 video + MP3 audio) — auto-starts via `record_on_start: true`
+- Track recording endpoint exists but produces empty files (RTK issue)
+- `stopAllRecordings` fallback on roomLeft
+- Chunked Whisper transcription (10 MB chunks, 25s time budget, KV partial resume)
+- Hallucination filter (word + sentence repetition ratio)
+- Silent recording detection with clear user message
+- Summary generation (OpenRouter → Ollama fallback)
 - 7-section Markdown summary format
 - Google OAuth via central PocketBase
 - Dashboard with meeting history
 - Mobile-responsive UI (golden gradient on black)
-- Recording indicator (red pulsing dot)
+- Recording indicator (red pulsing dot, shown immediately)
 - Copy join link button
 - Download cards (CSV, transcript, MP4, MP3, WebM)
 - Deployed to Cloudflare Pages (GitHub auto-deploy)
 - Full docs suite (7 doc files)
-- JSSA-amply 106-min meeting transcribed and summarized
+- JSSA-amply 106-min meeting transcribed and summarized (manual pipeline)
 
-### ❌ Not Done (Future Work)
-- [ ] End-to-end test with real multi-person conversation (current tests were solo)
+### ❌ Not Done / Known Issues
+- [ ] RTK native transcription (`transcribe_on_end`) not working — returns 0-byte CSV for all sessions
+- [ ] Track recordings produce empty files (`file_size: 0`) — RTK issue, not our code
+- [ ] Track recording `layers` field required despite docs saying optional
+- [ ] End-to-end test with real multi-person conversation (current tests were solo or 2-person)
 - [ ] Ollama Cloud API key renewal (using OpenRouter as primary)
 - [ ] Custom domain (e.g., `ve-rooom.com`)
 - [ ] Live captions (real-time transcription)
@@ -529,18 +616,21 @@ RealtimeKit REST API does NOT support deleting meetings, recordings, or sessions
 
 ### Key non-obvious things
 1. **The Vite dev proxy** (`vite.config.ts`) proxies `/api` → `http://localhost:8788` so the frontend on port 5173 can reach Pages Functions on 8788. Run both `vite` and `wrangler pages dev` for local dev.
-2. **`record_on_start: false`** — we intentionally don't auto-record on join. Frontend starts recordings 5s after meeting is ready. This allows server-side dedup.
-3. **Track recording `layers` is required** despite docs saying optional. This was a multi-hour debugging saga.
-4. **`type` field is always empty** in CF's list recordings response. Detect track recordings by `.webm` extension in `output_file_name` or `Array.isArray(download_url)`.
-5. **Track response shape differs from composite** — `data.id` (not `data.recording.id`).
-6. **Whisper needs `language: "en"` forced** — otherwise it misdetects on silence-heavy audio (detected Russian at 29.5% confidence on one test, producing Cyrillic garbage).
-7. **Whisper hallucinates on silence** — returns "Thank you. Thank you. Thank you." — this is expected behavior on silent audio.
-8. **Workers AI 25MB limit** — audio files larger than this can't be transcribed. Split with ffmpeg first.
-9. **CF API token needs `Workers AI:Run` scope** — without it, Whisper returns 401.
-10. **React.StrictMode double-mounts effects** — use `meetingRef` pattern to prevent duplicate recording starts.
-11. **Google profile image** may break — use `onError` fallback to initials avatar.
-12. **Room ID trailing slash** causes 405 — trim in `joinRoom`.
-13. **SVG attributes in React** must be camelCase: `strokeWidth` not `stroke-width`.
+2. **`record_on_start: true`** — RTK auto-records when session starts. This was changed to `false` in commit 00d5328 (Jul 7) which broke recordings. Reverted in commit 6d80cb1 (Jul 13). Do NOT change this back to `false`.
+3. **`recording_config` must be on meeting creation** — `realtimekit_bucket_config` + `audio_config` (MP3 codec) set at meeting creation time. Removing this caused empty track files.
+4. **RTK native transcription is NOT working** — `transcription_minutes_consumed: 0` for ALL sessions. The `transcript_download_url` exists but returns 0-byte CSV. Whisper on composite MP3 is the actual transcription path.
+5. **Track recordings are empty** — `file_size: 0` for all track recordings on all meetings. This is an RTK issue, not our code. Composite MP3 is the primary audio source.
+6. **Whisper hallucinates on silence** — returns "Thank you. Thank you. Thank you." repetitively. The hallucination filter catches this via word repetition ratio (< 0.15 unique words) and sentence repetition ratio (< 0.2 unique sentences).
+7. **Workers AI 25 MB limit per request** — but we chunk at 10 MB for faster processing. A 1-hour meeting (~140 MB) takes ~14 chunks across ~7 Worker invocations with KV-based partial resume.
+8. **CF Pages Functions 30s wall-clock limit** — transcribe.ts uses a 25s time budget, saves partial progress to KV, and returns `processing` so the frontend can retry.
+9. **`type` field is always empty** in CF's list recordings response. Detect track recordings by `.webm` extension in `output_file_name` or `Array.isArray(download_url)`.
+10. **Track response shape differs from composite** — `data.id` (not `data.recording.id`).
+11. **CF API token needs `Workers AI:Run` scope** — without it, Whisper returns 401.
+12. **Google profile image** may break — use `onError` fallback to initials avatar.
+13. **Room ID trailing slash** causes 405 — trim in `joinRoom`.
+14. **SVG attributes in React** must be camelCase: `strokeWidth` not `stroke-width`.
+15. **KV partial progress key** — `meeting:{id}:partial` stores `{ chunkIndex, transcriptParts, totalChunks, totalSize }`. Deleted on completion.
+16. **Silent recording detection** — if all Whisper chunks produce hallucinations, the audio is silent. Returns `silent` status with a clear message about muted microphone.
 
 ### The JSSA-amply test artifacts
 The root directory has Python scripts and audio segments from testing the transcription pipeline on a 106-minute recording. These are test artifacts, not production code:
@@ -567,7 +657,15 @@ These can be cleaned up if the repo is getting cluttered, but they serve as refe
 8. `fix: avatar URL from Google rawUser.picture + onError fallback`
 9. `fix: stop infinite polling when transcript is empty or summary unavailable`
 10. `cd6bba3` — JSSA-amply summary, responsive, recording config
-11. *(pending)* — Track recording + OpenRouter + SVG fixes + README updates + stop recording fix
+11. `00d5328` — Start recording on join, stop on leave, track recording + OpenRouter (⚠️ introduced record_on_start: false regression)
+12. `bd5cdaa` — Transcription pipeline: latest session, language en-US, composite Whisper fallback, dashboard with sessions
+13. `3e80027` — Audio chunking for long meetings (HTTP Range splitting), dashboard session details
+14. `4515892` — KV caching: transcript+summary persisted, user tracking, dashboard shows who joined
+15. `727740c` — Large meeting transcription via Range requests, deduplicate hallucinated repetition
+16. `c355c42` — Dedup+truncate to 60K for single-call summary, download buttons always visible
+17. `c75ee8d` — Persist raw transcript to KV immediately after Whisper, pass meetingId to generate-summary
+18. `aa344f1` — Refactor: auth token security, rate limiting, DRY utils, CSS split, dashboard search, skeletons
+19. `6d80cb1` — Fix: revert to record_on_start, fix hallucination filter, silent recording detection, chunked transcription with time budget
 
 ---
 
