@@ -83,7 +83,6 @@ export default function Meeting() {
 function MeetingView({ roomId }: { roomId: string }) {
 	const { meeting } = useRealtimeKitMeeting();
 	const [copied, setCopied] = useState(false);
-	const [isRecording, setIsRecording] = useState(true);
 	const [meetingEnded, setMeetingEnded] = useState(false);
 	const stopRequested = useRef(false);
 	const meetingRef = useRef(meeting);
@@ -100,7 +99,6 @@ function MeetingView({ roomId }: { roomId: string }) {
 			if (stopRequested.current) return;
 			stopRequested.current = true;
 			console.log("[MeetingView] roomLeft — stopping recordings for meeting:", roomId);
-			setIsRecording(false);
 			try {
 				const res = await stopAllRecordings(roomId);
 				console.log("[MeetingView] Stop result:", res);
@@ -145,12 +143,6 @@ function MeetingView({ roomId }: { roomId: string }) {
 				showSetupScreen={true}
 			/>
 			<div className="meeting-overlay-controls">
-				{isRecording && (
-					<div className="recording-indicator">
-						<span className="recording-dot" />
-						Recording
-					</div>
-				)}
 				<button className="btn-share" onClick={handleCopyLink}>
 					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
 						<path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/>

@@ -56,6 +56,14 @@ export default function Summary() {
 					if (!transcribingRef.current && res.audioRecordingUrl) {
 						triggerTranscription(res);
 					}
+				} else if (res.status === "no_ended_session") {
+					setLoading(true);
+					if (currentPoll >= MAX_POLLS) {
+						setPollTimedOut(true);
+						setLoading(false);
+						return;
+					}
+					timerId = setTimeout(poll, 5000);
 				} else {
 					setLoading(false);
 					if (!res.recordingUrl && !res.audioRecordingUrl) {

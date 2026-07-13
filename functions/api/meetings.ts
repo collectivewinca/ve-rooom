@@ -62,7 +62,6 @@ interface MeetingWithSessions extends RTKMeeting {
 			recording_duration?: number;
 			has_video: boolean;
 			has_audio: boolean;
-			has_track: boolean;
 		}[];
 	}[];
 	createdBy?: { email: string; name: string };
@@ -171,18 +170,21 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
 		const meetingRecordings = recordingsByMeeting[m.id] || [];
 
 		const sessions = meetingSessions.map((s) => {
-			const sessionRecordings = meetingRecordings.filter((r) => r.session_id === s.id);
+			const sessionRecordings = meetingRecordings
+				.filter((r) => r.session_id === s.id)
+				.filter((r) => {
+					const isTrack = (r.output_file_name || "").includes(".webm") || typeof r.download_url !== "string";
+					return !isTrack;
+				});
 			const recordings = sessionRecordings.map((r) => {
-				const isTrack = (r.output_file_name || "").includes(".webm") || typeof r.download_url !== "string";
 				return {
 					id: r.id,
 					status: r.status,
-					type: isTrack ? "track" : "composite",
+					type: "composite" as const,
 					invoked_time: r.invoked_time,
 					recording_duration: (r as unknown as Record<string, unknown>).recording_duration as number | undefined,
-					has_video: !isTrack && typeof r.download_url === "string",
-					has_audio: !isTrack && !!r.audio_download_url,
-					has_track: isTrack,
+					has_video: typeof r.download_url === "string",
+					has_audio: !!r.audio_download_url,
 				};
 			});
 

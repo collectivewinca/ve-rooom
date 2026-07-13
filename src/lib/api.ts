@@ -55,12 +55,11 @@ export interface GenerateSummaryResponse {
 export interface SessionRecording {
 	id: string;
 	status: string;
-	type: "composite" | "track";
+	type: "composite";
 	invoked_time?: string;
 	recording_duration?: number;
 	has_video: boolean;
 	has_audio: boolean;
-	has_track: boolean;
 }
 
 export interface MeetingSession {

@@ -299,7 +299,6 @@ function SessionRow({ session, meetingId }: { session: MeetingSession; meetingId
 	const statusInfo = sessionStatusInfo(session.status);
 	const duration = formatDuration(session.created_at, session.ended_at);
 	const compositeRecs = session.recordings.filter((r) => r.type === "composite");
-	const trackRecs = session.recordings.filter((r) => r.type === "track");
 	const hasUploaded = session.recordings.some((r) => r.status === "UPLOADED");
 	const totalRecDuration = session.recordings.reduce((sum, r) => sum + (r.recording_duration || 0), 0);
 	const recDurationStr = totalRecDuration > 0 ? formatDuration(undefined, new Date(totalRecDuration * 1000).toISOString()) : "";
@@ -357,18 +356,8 @@ function SessionRow({ session, meetingId }: { session: MeetingSession; meetingId
 					<>
 						{compositeRecs.length > 0 && (
 							<div className="recording-group">
-								<span className="recording-type">Composite</span>
+								<span className="recording-type">Recording</span>
 								{compositeRecs.map((r) => (
-									<span key={r.id} className={`recording-badge ${r.status.toLowerCase()}`}>
-										{recordingStatusIcon(r.status)}
-									</span>
-								))}
-							</div>
-						)}
-						{trackRecs.length > 0 && (
-							<div className="recording-group">
-								<span className="recording-type">Track</span>
-								{trackRecs.map((r) => (
 									<span key={r.id} className={`recording-badge ${r.status.toLowerCase()}`}>
 										{recordingStatusIcon(r.status)}
 									</span>
