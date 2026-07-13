@@ -125,11 +125,21 @@ export default function Summary() {
 						transcript_text: result.transcript,
 					});
 				}
+			} else if (result.status === "processing") {
+				setTranscribeStatus(`Processing audio... ${result.chunksDone || 0}/${result.totalChunks || "?"} chunks done. Retrying...`);
+				setTimeout(() => {
+					transcribingRef.current = false;
+					triggerTranscription(summaryData);
+				}, 3000);
+				return;
+			} else if (result.status === "silent") {
+				setTranscribeStatus(result.message || "The recording appears to be silent. No speech was detected.");
+				setData({ ...summaryData, status: "silent", summary: `## Silent Recording\n\n${result.message || "No speech was detected in this meeting recording."}\n\nThis usually means the microphone was muted or not connected during the meeting. Download the recording below to verify.` });
 			} else if (result.status === "too_large") {
-				setTranscribeStatus(result.message || "Audio too large for Workers AI (25MB limit). Download manually.");
+				setTranscribeStatus(result.message || "Audio too large for automatic transcription. Download manually.");
 			} else if (result.status === "no_speech") {
 				setTranscribeStatus("No speech detected in the audio.");
-				setData({ ...summaryData, status: "ok", summary: "## Meeting Summary\n\nNo speech was detected in this meeting.\n\nDownload the recording below to verify." });
+				setData({ ...summaryData, status: "silent", summary: "## Silent Recording\n\nNo speech was detected in this meeting.\n\nDownload the recording below to verify." });
 			} else if (result.status === "whisper_failed") {
 				setTranscribeStatus(result.message || "Whisper transcription failed.");
 			} else {
@@ -144,8 +154,8 @@ export default function Summary() {
 	}
 
 	const hasDownloads = data?.transcriptUrl || data?.transcript_text || data?.recordingUrl || data?.audioRecordingUrl || (data?.trackFiles && data.trackFiles.length > 0);
-	const showSummary = (data?.status === "ok" && !!data.summary) || (data?.status === "needs_transcription" && !!data.summary);
-	const showBlur = data && data.status !== "no_ended_session" && data.status !== "error" && !showSummary;
+	const showSummary = (data?.status === "ok" && !!data.summary) || (data?.status === "silent" && !!data.summary) || (data?.status === "needs_transcription" && !!data.summary);
+	const showBlur = data && data.status !== "no_ended_session" && data.status !== "error" && data.status !== "silent" && !showSummary;
 
 	return (
 		<div className="summary-page">
@@ -326,8 +336,8 @@ export default function Summary() {
 						{loading && data?.status === "processing" && (
 							<p className="summary-overlay-sub">Transcription in progress (poll #{pollCount})...</p>
 						)}
-						{data?.status === "needs_transcription" && (
-							<p className="summary-overlay-sub">Auto-transcription running. If it fails, download the audio from the Downloads section above.</p>
+					{data?.status === "needs_transcription" && (
+							<p className="summary-overlay-sub">Auto-transcription running. If the recording is silent, you'll see a message below. Otherwise, download the audio from the Downloads section.</p>
 						)}
 					</div>
 				</div>

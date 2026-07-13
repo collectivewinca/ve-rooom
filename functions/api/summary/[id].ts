@@ -24,7 +24,6 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env })
 		"Content-Type": "application/json",
 	};
 
-	// 1. Find the LATEST ended session for this meeting
 	const sessionsRes = await fetch(
 		`${RTK_BASE}/${env.CF_ACCOUNT_ID}/realtime/kit/${env.RTK_APP_ID}/sessions?meeting_id=${meetingId}`,
 		{ headers: authHeaders }
@@ -96,14 +95,19 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env })
 		});
 	}
 
-	// Cache hit: transcript only (no summary yet)
+	// Cache hit: transcript only (no summary yet) — generate summary server-side
 	if (cached && cached.transcript && !cached.summary) {
 		const recRes = await fetchRecordings();
 		const parsed = await parseSessionRecordings(recRes, meetingId, session.id);
 
+		const summary = await generateSummary(cached.transcript, env);
+		if (summary) {
+			await saveCachedResult(env.MEETING_CACHE, meetingId, { transcript: cached.transcript, summary, cachedAt: cached.cachedAt });
+		}
+
 		return jsonResponse(200, {
-			status: "needs_transcription",
-			transcriptUrl: undefined,
+			status: summary ? "ok" : "no_summary",
+			summary,
 			recordingUrl: parsed.recordingUrl,
 			audioRecordingUrl: parsed.audioRecordingUrl,
 			trackFiles: parsed.trackFiles.length > 0 ? parsed.trackFiles : undefined,
@@ -112,7 +116,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env })
 		});
 	}
 
-	// No cache: fetch transcript URL + recordings + download transcript
+	// No cache: fetch RTK transcript URL + recordings
 	const [transcriptUrl, recRes] = await Promise.all([fetchTranscriptUrl(), fetchRecordings()]);
 	const parsed = await parseSessionRecordings(recRes, meetingId, session.id);
 
@@ -148,6 +152,8 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env })
 		});
 	}
 
+	// RTK transcript empty — return needs_transcription so frontend triggers /api/transcribe
+	console.log("[summary.ts] RTK transcript empty — returning needs_transcription for client-side Whisper");
 	return jsonResponse(200, {
 		status: "needs_transcription",
 		transcriptUrl,

@@ -6,7 +6,7 @@ import {
 	useRealtimeKitMeeting,
 } from "@cloudflare/realtimekit-react";
 import { RtkMeeting } from "@cloudflare/realtimekit-react-ui";
-import { startCompositeRecording, startTrackRecording, stopAllRecordings } from "../lib/api";
+import { stopAllRecordings } from "../lib/api";
 
 export default function Meeting() {
 	const { roomId } = useParams<{ roomId: string }>();
@@ -83,9 +83,8 @@ export default function Meeting() {
 function MeetingView({ roomId }: { roomId: string }) {
 	const { meeting } = useRealtimeKitMeeting();
 	const [copied, setCopied] = useState(false);
-	const [isRecording, setIsRecording] = useState(false);
+	const [isRecording, setIsRecording] = useState(true);
 	const [meetingEnded, setMeetingEnded] = useState(false);
-	const recordingsStarted = useRef(false);
 	const stopRequested = useRef(false);
 	const meetingRef = useRef(meeting);
 	meetingRef.current = meeting;
@@ -96,27 +95,6 @@ function MeetingView({ roomId }: { roomId: string }) {
 	useEffect(() => {
 		const m = meetingRef.current;
 		if (!m) return;
-
-		const startRecordings = async () => {
-			if (recordingsStarted.current) return;
-			recordingsStarted.current = true;
-			console.log("[MeetingView] roomJoined — starting recordings for meeting:", roomId);
-			setIsRecording(true);
-
-			try {
-				const composite = await startCompositeRecording(roomId);
-				console.log("[MeetingView] Composite recording:", composite);
-			} catch (e) {
-				console.log("[MeetingView] Composite recording failed:", e);
-			}
-
-			try {
-				const track = await startTrackRecording(roomId);
-				console.log("[MeetingView] Track recording:", track);
-			} catch (e) {
-				console.log("[MeetingView] Track recording failed:", e);
-			}
-		};
 
 		const stopRecordings = async () => {
 			if (stopRequested.current) return;
@@ -139,13 +117,11 @@ function MeetingView({ roomId }: { roomId: string }) {
 			off(event: "roomLeft", handler: (payload: { state: string }) => void): void;
 		};
 
-		console.log("[MeetingView] Attaching roomJoined / roomLeft listeners");
-		self.on("roomJoined", startRecordings);
+		console.log("[MeetingView] Attaching roomLeft listener");
 		self.on("roomLeft", stopRecordings);
 
 		return () => {
-			console.log("[MeetingView] Cleaning up roomJoined / roomLeft listeners");
-			self.off("roomJoined", startRecordings);
+			console.log("[MeetingView] Cleaning up roomLeft listener");
 			self.off("roomLeft", stopRecordings);
 		};
 	}, [roomId]);

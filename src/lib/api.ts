@@ -15,7 +15,7 @@ export interface TrackFile {
 }
 
 export interface SummaryResponse {
-	status: "ok" | "processing" | "no_ended_session" | "no_summary" | "error" | "needs_transcription";
+	status: "ok" | "processing" | "no_ended_session" | "no_summary" | "error" | "needs_transcription" | "silent";
 	summary?: string;
 	transcriptUrl?: string;
 	recordingUrl?: string;
@@ -36,10 +36,13 @@ export interface SummaryResponse {
 }
 
 export interface TranscribeResponse {
-	status: "transcribed" | "no_speech" | "too_large" | "whisper_failed" | "error";
+	status: "transcribed" | "no_speech" | "too_large" | "whisper_failed" | "error" | "silent" | "processing";
 	transcript?: string;
 	message?: string;
 	sizeMb?: string;
+	numChunks?: number;
+	chunksDone?: number;
+	totalChunks?: number;
 }
 
 export interface GenerateSummaryResponse {
