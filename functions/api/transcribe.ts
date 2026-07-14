@@ -9,7 +9,7 @@ type Env = Pick<AppEnv, "CF_ACCOUNT_ID" | "CF_API_TOKEN" | "RTK_APP_ID" | "MEETI
 
 const CHUNK_SIZE = 10 * 1024 * 1024;
 const TIME_BUDGET_MS = 25000;
-const MAX_TOTAL_SIZE = 200 * 1024 * 1024;
+const MAX_TOTAL_SIZE = 1024 * 1024 * 1024;
 
 interface PartialProgress {
 	chunkIndex: number;

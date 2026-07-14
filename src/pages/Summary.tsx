@@ -300,6 +300,7 @@ export default function Summary() {
 				setData({ ...summaryData, status: "silent", summary: `## Silent Recording\n\n${result.message || "No speech was detected in this meeting recording."}\n\nThis usually means the microphone was muted or not connected during the meeting. Download the recording below to verify.` });
 			} else if (result.status === "too_large") {
 				setTranscribeStatus(result.message || "Audio too large for automatic transcription. Download manually.");
+				setData((prev) => prev ? { ...prev, status: "silent" as const, summary: `## Large Recording\n\n${result.message || "The audio file is too large for automatic transcription."}\n\nDownload the recording below to transcribe it manually.` } : prev);
 			} else if (result.status === "no_speech") {
 				setTranscribeStatus("No speech detected in the audio.");
 				setData({ ...summaryData, status: "silent", summary: "## Silent Recording\n\nNo speech was detected in this meeting.\n\nDownload the recording below to verify." });
