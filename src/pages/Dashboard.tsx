@@ -201,7 +201,10 @@ export default function Dashboard() {
 					const endedSessions = m.sessions.filter((s) => s.status === "ENDED");
 					const hasEndedSession = endedSessions.length > 0;
 					const isLive = m.sessions.some((s) => s.status !== "ENDED" && s.status !== "INIT");
-					const latestEndedSessionId = endedSessions[0]?.id;
+					// Prefer the latest ended session that has recordings; fall back to latest ended
+					const endedWithRecordings = endedSessions.filter((s) => s.recordings.length > 0);
+					const summarySession = endedWithRecordings[0] || endedSessions[0];
+					const summarySessionId = summarySession?.id;
 
 					return (
 						<div key={m.id} className={`meeting-card ${isExpanded ? "expanded" : ""}`}>
@@ -244,9 +247,9 @@ export default function Dashboard() {
 									</div>
 								</div>
 									<div className="meeting-card-actions">
-										{hasEndedSession && latestEndedSessionId && (
+										{hasEndedSession && summarySessionId && (
 											<Link
-												to={`/summary/${m.id}?sessionId=${latestEndedSessionId}`}
+												to={`/summary/${m.id}?sessionId=${summarySessionId}`}
 												className="btn-link"
 												onClick={(e) => e.stopPropagation()}
 											>

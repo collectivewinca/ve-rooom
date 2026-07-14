@@ -80,8 +80,9 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env, w
 	if (!session) {
 		const endedSessions = meetingSessions.filter((s) => s.status === "ENDED");
 		endedSessions.sort((a, b) => (b.ended_at || "").localeCompare(a.ended_at || ""));
-		session = endedSessions[0];
-		console.log("[summary.ts] Falling back to latest ended session:", session?.id);
+		// Prefer the latest ended session that has a recording; fall back to latest ended
+		session = endedSessions.find((s) => s.recording_status === "UPLOADED" || s.recording_status === "RECORDING") || endedSessions[0];
+		console.log("[summary.ts] Falling back to latest ended session with recording:", session?.id);
 	}
 
 	console.log("[summary.ts] Ended sessions for meeting:", meetingSessions.filter((s) => s.status === "ENDED").length, "Using:", session?.id, "ended_at:", session?.ended_at);

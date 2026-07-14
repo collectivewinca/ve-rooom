@@ -213,8 +213,9 @@ export async function getLatestEndedSessionId(meetingId: string): Promise<string
 		if (!meeting) return undefined;
 		const ended = meeting.sessions.filter((s) => s.status === "ENDED");
 		if (ended.length === 0) return undefined;
-		// Dashboard sorts sessions latest-first, so sessions[0] is the most recent ended session
-		return ended[0]?.id;
+		// Prefer the latest ended session that has recordings; fall back to latest ended
+		const withRecordings = ended.filter((s) => s.recordings.length > 0);
+		return (withRecordings[0] || ended[0])?.id;
 	} catch {
 		return undefined;
 	}
