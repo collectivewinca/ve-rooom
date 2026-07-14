@@ -43,17 +43,6 @@ Rules:
 - Keep it professional, clear, and skimmable with proper Markdown formatting.
 - Use timestamps from the transcript to reference when key moments occurred, if available.`;
 
-function generateTranscriptCsvUrl(text: string): string {
-	const lines = text.split("\n");
-	const csvLines = ['"Line","Text"'];
-	lines.forEach((line, i) => {
-		if (!line.trim()) return;
-		const escaped = line.replace(/"/g, '""');
-		csvLines.push(`${i + 1},"${escaped}"`);
-	});
-	return `data:text/csv;charset=utf-8,${encodeURIComponent(csvLines.join("\n"))}`;
-}
-
 export default function Summary() {
 	const { roomId } = useParams<{ roomId: string }>();
 	const navigate = useNavigate();
@@ -376,7 +365,7 @@ export default function Summary() {
 					disabled={resummarizing || transcribing}
 					style={{ width: "auto", margin: 0 }}
 				>
-					{resummarizing ? "Generating..." : "Re-generate Summary"}
+					{resummarizing ? <span className="blink-loading">Generating...</span> : "Re-generate Summary"}
 				</button>
 				<button
 					className="btn-outline"
@@ -422,7 +411,7 @@ export default function Summary() {
 							disabled={resummarizing || !promptText.trim()}
 							style={{ width: "auto", margin: 0 }}
 						>
-							{resummarizing ? "Generating..." : "Generate with this prompt"}
+							{resummarizing ? <span className="blink-loading">Generating...</span> : "Generate with this prompt"}
 						</button>
 						<button
 							className="btn-outline"
@@ -509,34 +498,20 @@ export default function Summary() {
 				<div className="download-section">
 					<h3>Downloads</h3>
 					<div className="download-grid">
-						{data?.transcript_text && data.transcript_text.trim().length > 0 ? (
-							<>
-								<a href={generateTranscriptCsvUrl(data.transcript_text)} download="transcript.csv" className="download-card">
-									<div className="download-card-icon" style={{ background: "rgba(34, 197, 94, 0.15)" }}>
-										<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-											<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-											<polyline points="14 2 14 8 20 8"/>
-										</svg>
-									</div>
-									<div className="download-card-info">
-										<div className="download-card-title">Transcript</div>
-										<div className="download-card-subtitle">CSV file</div>
-									</div>
-								</a>
-								<a href={`data:text/plain;charset=utf-8,${encodeURIComponent(data.transcript_text)}`} download="transcript.txt" className="download-card">
-									<div className="download-card-icon" style={{ background: "rgba(34, 197, 94, 0.15)" }}>
-										<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-											<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-											<polyline points="14 2 14 8 20 8"/>
-										</svg>
-									</div>
-									<div className="download-card-info">
-										<div className="download-card-title">Transcript</div>
-										<div className="download-card-subtitle">Text file</div>
-									</div>
-								</a>
-							</>
-						) : data?.transcriptUrl && (
+					{data?.transcript_text && data.transcript_text.trim().length > 0 ? (
+						<a href={`data:text/plain;charset=utf-8,${encodeURIComponent(data.transcript_text)}`} download="transcript.txt" className="download-card">
+							<div className="download-card-icon" style={{ background: "rgba(34, 197, 94, 0.15)" }}>
+								<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+									<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+									<polyline points="14 2 14 8 20 8"/>
+								</svg>
+							</div>
+							<div className="download-card-info">
+								<div className="download-card-title">Transcript</div>
+								<div className="download-card-subtitle">Text file</div>
+							</div>
+						</a>
+					) : data?.transcriptUrl && (
 							<a href={data.transcriptUrl} target="_blank" rel="noreferrer" className="download-card">
 								<div className="download-card-icon" style={{ background: "rgba(34, 197, 94, 0.15)" }}>
 									<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
