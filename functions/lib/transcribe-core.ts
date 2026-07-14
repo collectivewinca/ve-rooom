@@ -122,8 +122,9 @@ export async function transcribeCompositeAudio(
 	env: Pick<AppEnv, "CF_ACCOUNT_ID" | "CF_API_TOKEN" | "MEETING_CACHE">,
 	meetingId: string,
 	audioUrl: string,
+	sessionId?: string,
 ): Promise<TranscribeResult> {
-	const partialKey = `meeting:${meetingId}:partial`;
+	const partialKey = sessionId ? `meeting:${meetingId}:session:${sessionId}:partial` : `meeting:${meetingId}:partial`;
 	let partial: PartialProgress | null = null;
 	try {
 		const rawPartial = await env.MEETING_CACHE.get(partialKey);
@@ -133,7 +134,7 @@ export async function transcribeCompositeAudio(
 		}
 	} catch { }
 
-	const existing = await getCachedResult(env.MEETING_CACHE, meetingId);
+	const existing = await getCachedResult(env.MEETING_CACHE, meetingId, sessionId);
 	if (existing && existing.transcript && !partial) {
 		console.log("[transcribe-core] Cached transcript found —", existing.transcript.length, "chars, summary:", existing.summary?.length || 0, "chars");
 		return { status: "transcribed", transcript: existing.transcript };
@@ -229,7 +230,7 @@ export async function transcribeCompositeAudio(
 		if (chunkTranscripts.length > 0) {
 			const transcriptText = dedupeTranscript(chunkTranscripts.join("\n\n"));
 			console.log("[transcribe-core] Merged", chunkTranscripts.length, "/", chunksDone, "chunks, total:", transcriptText.length, "chars");
-			await saveCachedResult(env.MEETING_CACHE, meetingId, { transcript: transcriptText, summary: "", cachedAt: new Date().toISOString() });
+			await saveCachedResult(env.MEETING_CACHE, meetingId, { transcript: transcriptText, summary: "", cachedAt: new Date().toISOString() }, sessionId);
 			return { status: "transcribed", transcript: transcriptText };
 		}
 
@@ -284,6 +285,7 @@ export async function generateMeetingSummary(
 	meetingId: string,
 	transcript: string,
 	customPrompt?: string,
+	sessionId?: string,
 ): Promise<SummaryResult> {
 	const context = await buildMeetingContext(env, meetingId);
 	const input = context + transcript;
@@ -293,14 +295,14 @@ export async function generateMeetingSummary(
 		console.log("[summary-core] Short transcript:", input.length, "chars — single call");
 		const summary = await generateSummary(input, env, prompt);
 		if (summary) {
-			await persistSummary(env, meetingId, transcript, summary, prompt);
+			await persistSummary(env, meetingId, transcript, summary, prompt, sessionId);
 			return { status: "ok", summary };
 		}
 		return { status: "no_summary", message: "Could not generate summary." };
 	}
 
 	// Map-reduce for long transcripts
-	const partialKey = `meeting:${meetingId}:summary-partial`;
+	const partialKey = sessionId ? `meeting:${meetingId}:session:${sessionId}:summary-partial` : `meeting:${meetingId}:summary-partial`;
 	let partial: { chunkIndex: number; chunkSummaries: string[]; totalChunks: number } | null = null;
 	try {
 		const raw = await env.MEETING_CACHE.get(partialKey);
@@ -349,16 +351,16 @@ export async function generateMeetingSummary(
 		: await combineChunkSummaries(combined.slice(0, SUMMARY_DIRECT_MAX_CHARS) + "\n\n[...]", env, prompt);
 
 	if (finalSummary) {
-		await persistSummary(env, meetingId, transcript, finalSummary, prompt);
+		await persistSummary(env, meetingId, transcript, finalSummary, prompt, sessionId);
 		return { status: "ok", summary: finalSummary };
 	}
 	return { status: "no_summary", message: "Could not combine chunk summaries." };
 }
 
-async function persistSummary(env: AppEnv, meetingId: string, transcript: string, summary: string, prompt?: string): Promise<void> {
-	await saveCachedResult(env.MEETING_CACHE, meetingId, { transcript, summary, cachedAt: new Date().toISOString() });
-	await addSummaryVersion(env.MEETING_CACHE, meetingId, { summary, prompt, createdAt: new Date().toISOString() });
-	console.log("[summary-core] Persisted summary for", meetingId, "—", summary.length, "chars");
+async function persistSummary(env: AppEnv, meetingId: string, transcript: string, summary: string, prompt?: string, sessionId?: string): Promise<void> {
+	await saveCachedResult(env.MEETING_CACHE, meetingId, { transcript, summary, cachedAt: new Date().toISOString() }, sessionId);
+	await addSummaryVersion(env.MEETING_CACHE, meetingId, { summary, prompt, createdAt: new Date().toISOString() }, sessionId);
+	console.log("[summary-core] Persisted summary for", meetingId, sessionId ? `session ${sessionId}` : "", "—", summary.length, "chars");
 }
 
 export async function maybeSendAutoEmail(env: AppEnv, meetingId: string, summary: string, appUrl: string): Promise<void> {

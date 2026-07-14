@@ -19,6 +19,7 @@ interface RTKWebhookEvent {
 		downloadUrl?: string;
 		audioDownloadUrl?: string;
 		meetingId?: string;
+		sessionId?: string;
 	};
 	transcriptDownloadUrl?: string;
 	summaryDownloadUrl?: string;
@@ -45,8 +46,9 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env, waitUnti
 	if (event.event === "recording.statusUpdate" && event.recording?.status === "UPLOADED") {
 		const meetingId = event.recording?.meetingId || event.meeting?.id;
 		const audioUrl = event.recording?.audioDownloadUrl || event.recording?.downloadUrl;
+		const sessionId = event.recording?.sessionId || event.meeting?.sessionId;
 		if (meetingId && audioUrl) {
-			waitUntil(runTranscriptionPipeline(env, meetingId, audioUrl, request.url));
+			waitUntil(runTranscriptionPipeline(env, meetingId, audioUrl, request.url, sessionId));
 			return jsonResponse(200, { ok: true, processing: true, event: event.event });
 		}
 	}
@@ -54,21 +56,24 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env, waitUnti
 	// Handle meeting ended → fetch recording audio URL then run pipeline
 	if (event.event === "meeting.ended" && event.meeting?.id) {
 		const meetingId = event.meeting.id;
-		waitUntil(findAudioAndProcess(env, meetingId, request.url));
+		const sessionId = event.meeting.sessionId;
+		waitUntil(findAudioAndProcess(env, meetingId, request.url, sessionId));
 		return jsonResponse(200, { ok: true, processing: true, event: event.event });
 	}
 
 	// Handle transcript ready → generate summary + send emails (RTK native transcript)
 	if (event.event === "meeting.transcript" && event.meeting?.id && event.transcriptDownloadUrl) {
 		const meetingId = event.meeting.id;
-		waitUntil(processTranscriptAndEmail(env, meetingId, event.transcriptDownloadUrl, request.url));
+		const sessionId = event.meeting.sessionId;
+		waitUntil(processTranscriptAndEmail(env, meetingId, event.transcriptDownloadUrl, request.url, sessionId));
 		return jsonResponse(200, { ok: true, processing: true });
 	}
 
 	// Handle summary ready → download + send emails (RTK's own summary)
 	if (event.event === "meeting.summary" && event.meeting?.id && event.summaryDownloadUrl) {
 		const meetingId = event.meeting.id;
-		waitUntil(processRtkSummaryAndEmail(env, meetingId, event.summaryDownloadUrl, request.url));
+		const sessionId = event.meeting.sessionId;
+		waitUntil(processRtkSummaryAndEmail(env, meetingId, event.summaryDownloadUrl, request.url, sessionId));
 		return jsonResponse(200, { ok: true, processing: true });
 	}
 
@@ -81,19 +86,19 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env, waitUnti
  * Uses KV partial resume for long meetings — if time budget runs out, the summary
  * page poll will pick up where this left off.
  */
-async function runTranscriptionPipeline(env: Env, meetingId: string, audioUrl: string, requestUrl: string): Promise<void> {
+async function runTranscriptionPipeline(env: Env, meetingId: string, audioUrl: string, requestUrl: string, sessionId?: string): Promise<void> {
 	try {
-		// Skip if already fully processed
-		const cached = await getCachedResult(env.MEETING_CACHE, meetingId);
+		// Skip if already fully processed for this session
+		const cached = await getCachedResult(env.MEETING_CACHE, meetingId, sessionId);
 		if (cached?.summary) {
-			console.log("[webhook] Already have summary for", meetingId, "— skipping");
+			console.log("[webhook] Already have summary for", meetingId, sessionId ? `session ${sessionId}` : "", "— skipping");
 			return;
 		}
 
-		console.log("[webhook] Starting transcription pipeline for", meetingId);
+		console.log("[webhook] Starting transcription pipeline for", meetingId, sessionId ? `session ${sessionId}` : "");
 
 		// Step 1: Whisper transcription (chunked, KV partial resume)
-		const tr = await transcribeCompositeAudio(env, meetingId, audioUrl);
+		const tr = await transcribeCompositeAudio(env, meetingId, audioUrl, sessionId);
 		console.log("[webhook] Transcription result:", tr.status);
 
 		if (tr.status === "processing") {
@@ -101,7 +106,7 @@ async function runTranscriptionPipeline(env: Env, meetingId: string, audioUrl: s
 			// Kick off a self-retry to continue processing.
 			console.log("[webhook] Transcription partial — retrying in 4s");
 			await sleep(4000);
-			await runTranscriptionPipeline(env, meetingId, audioUrl, requestUrl);
+			await runTranscriptionPipeline(env, meetingId, audioUrl, requestUrl, sessionId);
 			return;
 		}
 
@@ -118,7 +123,7 @@ async function runTranscriptionPipeline(env: Env, meetingId: string, audioUrl: s
 		// Step 2: Generate summary
 		const transcript = tr.transcript;
 		const customPrompt = await resolvePrompt(env, meetingId);
-		const summaryResult = await generateMeetingSummary(env, meetingId, transcript, customPrompt);
+		const summaryResult = await generateMeetingSummary(env, meetingId, transcript, customPrompt, sessionId);
 		console.log("[webhook] Summary result:", summaryResult.status);
 
 		if (summaryResult.status !== "ok") {
@@ -129,7 +134,7 @@ async function runTranscriptionPipeline(env: Env, meetingId: string, audioUrl: s
 		// Step 3: Auto-email
 		const appUrl = new URL(requestUrl).origin;
 		await maybeSendAutoEmail(env, meetingId, summaryResult.summary, appUrl);
-		console.log("[webhook] Pipeline complete for", meetingId);
+		console.log("[webhook] Pipeline complete for", meetingId, sessionId ? `session ${sessionId}` : "");
 	} catch (e) {
 		console.log("[webhook] Pipeline error:", e instanceof Error ? e.message : String(e));
 	}
@@ -139,12 +144,12 @@ async function runTranscriptionPipeline(env: Env, meetingId: string, audioUrl: s
  * Fallback: meeting.ended fires but recording.statusUpdate didn't.
  * Fetch the recording audio URL from the RTK API and run the pipeline.
  */
-async function findAudioAndProcess(env: Env, meetingId: string, requestUrl: string): Promise<void> {
+async function findAudioAndProcess(env: Env, meetingId: string, requestUrl: string, sessionId?: string): Promise<void> {
 	try {
-		// Skip if already processed
-		const cached = await getCachedResult(env.MEETING_CACHE, meetingId);
+		// Skip if already processed for this session
+		const cached = await getCachedResult(env.MEETING_CACHE, meetingId, sessionId);
 		if (cached?.summary) {
-			console.log("[webhook] meeting.ended — already have summary for", meetingId);
+			console.log("[webhook] meeting.ended — already have summary for", meetingId, sessionId ? `session ${sessionId}` : "");
 			return;
 		}
 
@@ -171,30 +176,33 @@ async function findAudioAndProcess(env: Env, meetingId: string, requestUrl: stri
 			return;
 		}
 
-		const recJson = await recRes.json() as { success: boolean; data?: { audio_download_url?: string; download_url?: string; status?: string; output_file_name?: string }[] };
+		const recJson = await recRes.json() as { success: boolean; data?: { audio_download_url?: string; download_url?: string; status?: string; output_file_name?: string; session_id?: string }[] };
 		const recordings = recJson.data || [];
 
-		// Find the composite recording with an audio URL
-		const composite = recordings.find((r) => r.audio_download_url && r.status === "UPLOADED" && !r.output_file_name?.endsWith(".webm"));
+		// Find the composite recording with an audio URL — prefer session-specific, fallback to any
+		let composite = recordings.find((r) => r.audio_download_url && r.status === "UPLOADED" && !r.output_file_name?.endsWith(".webm") && sessionId && r.session_id === sessionId);
+		if (!composite) {
+			composite = recordings.find((r) => r.audio_download_url && r.status === "UPLOADED" && !r.output_file_name?.endsWith(".webm"));
+		}
 		const audioUrl = composite?.audio_download_url;
 
 		if (!audioUrl) {
-			console.log("[webhook] meeting.ended — no uploaded composite audio found for", meetingId);
+			console.log("[webhook] meeting.ended — no uploaded composite audio found for", meetingId, sessionId ? `session ${sessionId}` : "");
 			return;
 		}
 
-		console.log("[webhook] meeting.ended — found audio, running pipeline");
-		await runTranscriptionPipeline(env, meetingId, audioUrl, requestUrl);
+		console.log("[webhook] meeting.ended — found audio, running pipeline for", meetingId, sessionId ? `session ${sessionId}` : "");
+		await runTranscriptionPipeline(env, meetingId, audioUrl, requestUrl, sessionId);
 	} catch (e) {
 		console.log("[webhook] findAudioAndProcess error:", e instanceof Error ? e.message : String(e));
 	}
 }
 
-async function processTranscriptAndEmail(env: Env, meetingId: string, transcriptUrl: string, requestUrl: string): Promise<void> {
+async function processTranscriptAndEmail(env: Env, meetingId: string, transcriptUrl: string, requestUrl: string, sessionId?: string): Promise<void> {
 	try {
-		const cached = await getCachedResult(env.MEETING_CACHE, meetingId);
+		const cached = await getCachedResult(env.MEETING_CACHE, meetingId, sessionId);
 		if (cached?.summary) {
-			console.log("[webhook] Already have cached summary for", meetingId);
+			console.log("[webhook] Already have cached summary for", meetingId, sessionId ? `session ${sessionId}` : "");
 			return;
 		}
 
@@ -230,14 +238,14 @@ async function processTranscriptAndEmail(env: Env, meetingId: string, transcript
 			transcript: transcriptText,
 			summary,
 			cachedAt: new Date().toISOString(),
-		});
+		}, sessionId);
 		await addSummaryVersion(env.MEETING_CACHE, meetingId, {
 			summary,
 			prompt: customPrompt,
 			createdAt: new Date().toISOString(),
-		});
+		}, sessionId);
 
-		console.log("[webhook] Summary generated for", meetingId);
+		console.log("[webhook] Summary generated for", meetingId, sessionId ? `session ${sessionId}` : "");
 
 		if (env.SMTP_API_URL) {
 			const [meta, participants] = await Promise.all([
@@ -262,11 +270,11 @@ async function processTranscriptAndEmail(env: Env, meetingId: string, transcript
 	}
 }
 
-async function processRtkSummaryAndEmail(env: Env, meetingId: string, summaryUrl: string, requestUrl: string): Promise<void> {
+async function processRtkSummaryAndEmail(env: Env, meetingId: string, summaryUrl: string, requestUrl: string, sessionId?: string): Promise<void> {
 	try {
-		const cached = await getCachedResult(env.MEETING_CACHE, meetingId);
+		const cached = await getCachedResult(env.MEETING_CACHE, meetingId, sessionId);
 		if (cached?.summary) {
-			console.log("[webhook] Already have cached summary for", meetingId, "— skipping RTK summary");
+			console.log("[webhook] Already have cached summary for", meetingId, sessionId ? `session ${sessionId}` : "", "— skipping RTK summary");
 			return;
 		}
 
@@ -285,14 +293,14 @@ async function processRtkSummaryAndEmail(env: Env, meetingId: string, summaryUrl
 			transcript: "",
 			summary: summaryText,
 			cachedAt: new Date().toISOString(),
-		});
+		}, sessionId);
 		await addSummaryVersion(env.MEETING_CACHE, meetingId, {
 			summary: summaryText,
 			prompt: undefined,
 			createdAt: new Date().toISOString(),
-		});
+		}, sessionId);
 
-		console.log("[webhook] RTK summary saved for", meetingId);
+		console.log("[webhook] RTK summary saved for", meetingId, sessionId ? `session ${sessionId}` : "");
 
 		if (env.SMTP_API_URL) {
 			const [meta, participants] = await Promise.all([

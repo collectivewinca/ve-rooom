@@ -9,8 +9,8 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 	const rl = await checkRateLimit(env.MEETING_CACHE, request);
 	if (!rl.allowed) return jsonResponse(429, { error: "Too many requests. Please slow down." });
 
-	const body = await request.json() as { meetingId: string; audioUrl: string };
-	console.log("[transcribe.ts] POST — meetingId:", body.meetingId, "audioUrl:", body.audioUrl ? "found" : "none");
+	const body = await request.json() as { meetingId: string; audioUrl: string; sessionId?: string };
+	console.log("[transcribe.ts] POST — meetingId:", body.meetingId, "sessionId:", body.sessionId || "(none)", "audioUrl:", body.audioUrl ? "found" : "none");
 
 	if (!body.meetingId || !body.audioUrl) {
 		return jsonResponse(400, { error: "meetingId and audioUrl are required" });
@@ -20,7 +20,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 		return jsonResponse(500, { error: "Server missing configuration" });
 	}
 
-	const result = await transcribeCompositeAudio(env, body.meetingId, body.audioUrl);
+	const result = await transcribeCompositeAudio(env, body.meetingId, body.audioUrl, body.sessionId);
 
 	switch (result.status) {
 		case "transcribed":

@@ -206,12 +206,12 @@ export async function fetchMeetings(): Promise<MeetingWithSessions[]> {
 	return data.meetings || [];
 }
 
-export async function transcribeAudio(meetingId: string, audioUrl: string): Promise<TranscribeResponse> {
-	console.log("[api.ts] transcribeAudio — meetingId:", meetingId, "audioUrl:", !!audioUrl);
+export async function transcribeAudio(meetingId: string, audioUrl: string, sessionId?: string): Promise<TranscribeResponse> {
+	console.log("[api.ts] transcribeAudio — meetingId:", meetingId, "sessionId:", sessionId || "(none)", "audioUrl:", !!audioUrl);
 	const res = await fetch("/api/transcribe", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ meetingId, audioUrl }),
+		body: JSON.stringify({ meetingId, audioUrl, sessionId }),
 	});
 	console.log("[api.ts] transcribeAudio response status:", res.status);
 	if (!res.ok) {
@@ -224,12 +224,12 @@ export async function transcribeAudio(meetingId: string, audioUrl: string): Prom
 	return data;
 }
 
-export async function generateSummaryFromTranscript(transcript: string, meetingId?: string, prompt?: string): Promise<GenerateSummaryResponse> {
-	console.log("[api.ts] generateSummaryFromTranscript — transcript:", transcript.length, "chars", "meetingId:", meetingId, "customPrompt:", !!prompt);
+export async function generateSummaryFromTranscript(transcript: string, meetingId?: string, prompt?: string, sessionId?: string): Promise<GenerateSummaryResponse> {
+	console.log("[api.ts] generateSummaryFromTranscript — transcript:", transcript.length, "chars", "meetingId:", meetingId, "sessionId:", sessionId || "(none)", "customPrompt:", !!prompt);
 	const res = await fetch("/api/generate-summary", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ transcript, meetingId, prompt }),
+		body: JSON.stringify({ transcript, meetingId, prompt, sessionId }),
 	});
 	console.log("[api.ts] generateSummary response status:", res.status);
 	if (!res.ok) {
@@ -247,9 +247,10 @@ export async function generateSummaryWithRetry(
 	meetingId: string,
 	prompt?: string,
 	onProgress?: (done: number, total: number) => void,
+	sessionId?: string,
 ): Promise<GenerateSummaryResponse> {
 	for (let attempt = 0; attempt < 60; attempt++) {
-		const result = await generateSummaryFromTranscript(transcript, meetingId, prompt);
+		const result = await generateSummaryFromTranscript(transcript, meetingId, prompt, sessionId);
 		if (result.status === "ok" && result.summary) {
 			return result;
 		}

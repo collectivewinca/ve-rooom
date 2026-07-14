@@ -86,6 +86,7 @@ export default function Summary() {
 			const result = await generateSummaryWithRetry(
 				data.transcript_text, roomId, promptToSend,
 				(done, total) => setResummarizeStatus(`Summarizing... chunk ${done}/${total}`),
+				sessionId,
 			);
 			if (result.status === "ok" && result.summary) {
 				setResummarizeStatus("Summary generated!");
@@ -269,6 +270,7 @@ export default function Summary() {
 				const summaryResult = await generateSummaryWithRetry(
 					summaryData.transcript_text, roomId, undefined,
 					(done, total) => setTranscribeStatus(`Summarizing... chunk ${done}/${total}`),
+					sessionId,
 				);
 				if (summaryResult.status === "ok" && summaryResult.summary) {
 					setTranscribeStatus("Summary generated!");
@@ -293,7 +295,7 @@ export default function Summary() {
 
 		setTranscribeStatus("Downloading audio and running Whisper transcription...");
 		try {
-			const result = await transcribeAudio(roomId, summaryData.audioRecordingUrl || "");
+			const result = await transcribeAudio(roomId, summaryData.audioRecordingUrl || "", sessionId);
 
 			if (result.status === "transcribed" && result.transcript) {
 				setTranscribeStatus("Transcript ready! Generating AI summary...");
@@ -302,6 +304,7 @@ export default function Summary() {
 				const summaryResult = await generateSummaryWithRetry(
 					result.transcript, roomId, undefined,
 					(done, total) => setTranscribeStatus(`Summarizing... chunk ${done}/${total}`),
+					sessionId,
 				);
 
 				if (summaryResult.status === "ok" && summaryResult.summary) {

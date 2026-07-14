@@ -67,7 +67,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env, waitUnti
 	const rl = await checkRateLimit(env.MEETING_CACHE, request);
 	if (!rl.allowed) return jsonResponse(429, { error: "Too many requests. Please slow down." });
 
-	const body = await request.json() as { transcript: string; meetingId?: string; prompt?: string };
+	const body = await request.json() as { transcript: string; meetingId?: string; prompt?: string; sessionId?: string };
 
 	if (!body.transcript || body.transcript.trim().length === 0) {
 		return jsonResponse(400, { error: "transcript is required" });
@@ -83,7 +83,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env, waitUnti
 		console.log("[generate-summary] Short transcript:", contextualizedInput.length, "chars — single call");
 		const summary = await generateSummary(contextualizedInput, env, customPrompt);
 		if (summary) {
-			await finishSummary(env, body, summary, customPrompt, waitUntil, request);
+			await finishSummary(env, body, summary, customPrompt, waitUntil, request, body.sessionId);
 			return jsonResponse(200, { status: "ok", summary });
 		}
 		return jsonResponse(200, { status: "no_summary", message: "Could not generate summary." });
@@ -91,7 +91,8 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env, waitUnti
 
 	// Long transcript — map-reduce with KV partial resume
 	const meetingId = body.meetingId || "";
-	const partialKey = `meeting:${meetingId}:summary-partial`;
+	const sessionId = body.sessionId;
+	const partialKey = sessionId ? `meeting:${meetingId}:session:${sessionId}:summary-partial` : `meeting:${meetingId}:summary-partial`;
 
 	// Load existing partial
 	let partial: SummaryPartial | null = null;
@@ -168,16 +169,16 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env, waitUnti
 	}
 
 	if (finalSummary) {
-		await finishSummary(env, body, finalSummary, customPrompt, waitUntil, request);
+		await finishSummary(env, body, finalSummary, customPrompt, waitUntil, request, sessionId);
 		return jsonResponse(200, { status: "ok", summary: finalSummary });
 	}
 	return jsonResponse(200, { status: "no_summary", message: "Could not combine chunk summaries." });
 };
 
-async function finishSummary(env: Env, body: { transcript: string; meetingId?: string }, summary: string, customPrompt: string | undefined, waitUntil: (p: Promise<unknown>) => void, request: Request) {
-	await saveCachedResult(env.MEETING_CACHE, body.meetingId || "", { transcript: body.transcript, summary, cachedAt: new Date().toISOString() });
+async function finishSummary(env: Env, body: { transcript: string; meetingId?: string; sessionId?: string }, summary: string, customPrompt: string | undefined, waitUntil: (p: Promise<unknown>) => void, request: Request, sessionId?: string) {
+	await saveCachedResult(env.MEETING_CACHE, body.meetingId || "", { transcript: body.transcript, summary, cachedAt: new Date().toISOString() }, sessionId);
 	if (body.meetingId) {
-		await addSummaryVersion(env.MEETING_CACHE, body.meetingId, { summary, prompt: customPrompt, createdAt: new Date().toISOString() });
+		await addSummaryVersion(env.MEETING_CACHE, body.meetingId, { summary, prompt: customPrompt, createdAt: new Date().toISOString() }, sessionId);
 		// Only auto-email on the first summary — re-generates use the Send Email button
 		const alreadySent = await isEmailSent(env.MEETING_CACHE, body.meetingId);
 		if (env.SMTP_API_URL && !alreadySent) {
