@@ -200,6 +200,55 @@ export async function getSummaryHistory(kv: KVNamespace, meetingId: string, sess
 	}
 }
 
+export async function acquireTranscriptionLock(kv: KVNamespace, meetingId: string, owner: string, sessionId?: string, ttlSeconds = 120): Promise<boolean> {
+	try {
+		const key = sessionId ? `meeting:${meetingId}:session:${sessionId}:transcribe-lock` : `meeting:${meetingId}:transcribe-lock`;
+		const existing = await kv.get(key);
+		if (existing) {
+			const parsed = JSON.parse(existing) as { owner: string; acquiredAt: string; expiresAt: number };
+			if (Date.now() < parsed.expiresAt && parsed.owner !== owner) {
+				return false;
+			}
+		}
+		const now = Date.now();
+		await kv.put(key, JSON.stringify({ owner, acquiredAt: new Date().toISOString(), expiresAt: now + ttlSeconds * 1000 }), { expirationTtl: ttlSeconds });
+		console.log("[kv] Acquired transcription lock for", meetingId, "by", owner);
+		return true;
+	} catch (e) {
+		console.log("[kv] acquireTranscriptionLock error:", e);
+		return false;
+	}
+}
+
+export async function releaseTranscriptionLock(kv: KVNamespace, meetingId: string, owner: string, sessionId?: string): Promise<void> {
+	try {
+		const key = sessionId ? `meeting:${meetingId}:session:${sessionId}:transcribe-lock` : `meeting:${meetingId}:transcribe-lock`;
+		const existing = await kv.get(key);
+		if (existing) {
+			const parsed = JSON.parse(existing) as { owner: string };
+			if (parsed.owner === owner) {
+				await kv.delete(key);
+				console.log("[kv] Released transcription lock for", meetingId, "by", owner);
+			}
+		}
+	} catch (e) {
+		console.log("[kv] releaseTranscriptionLock error:", e);
+	}
+}
+
+export async function getTranscriptionLockOwner(kv: KVNamespace, meetingId: string, sessionId?: string): Promise<string | null> {
+	try {
+		const key = sessionId ? `meeting:${meetingId}:session:${sessionId}:transcribe-lock` : `meeting:${meetingId}:transcribe-lock`;
+		const raw = await kv.get(key);
+		if (!raw) return null;
+		const parsed = JSON.parse(raw) as { owner: string; expiresAt: number };
+		if (Date.now() >= parsed.expiresAt) return null;
+		return parsed.owner;
+	} catch {
+		return null;
+	}
+}
+
 export async function markEmailSent(kv: KVNamespace, meetingId: string): Promise<void> {
 	try {
 		await kv.put(`meeting:${meetingId}:email-sent`, new Date().toISOString());

@@ -1,4 +1,4 @@
-import { getCachedResult, saveCachedResult, getMeetingMeta, getParticipants, getMeetingPrompt, getUserPrompt, addSummaryVersion, isEmailSent, markEmailSent } from "./kv";
+import { getCachedResult, saveCachedResult, getMeetingMeta, getParticipants, getMeetingPrompt, getUserPrompt, addSummaryVersion, isEmailSent, markEmailSent, acquireTranscriptionLock, releaseTranscriptionLock, getTranscriptionLockOwner } from "./kv";
 import { generateSummary, summarizeChunk, combineChunkSummaries } from "./summarizer";
 import { sendSummaryEmails } from "./summary-email";
 import type { AppEnv } from "./env";
@@ -123,7 +123,9 @@ export async function transcribeCompositeAudio(
 	meetingId: string,
 	audioUrl: string,
 	sessionId?: string,
+	owner?: string,
 ): Promise<TranscribeResult> {
+	const lockOwner = owner || `api-${Date.now()}`;
 	const partialKey = sessionId ? `meeting:${meetingId}:session:${sessionId}:partial` : `meeting:${meetingId}:partial`;
 	let partial: PartialProgress | null = null;
 	try {
@@ -138,6 +140,28 @@ export async function transcribeCompositeAudio(
 	if (existing && existing.transcript && !partial) {
 		console.log("[transcribe-core] Cached transcript found —", existing.transcript.length, "chars, summary:", existing.summary?.length || 0, "chars");
 		return { status: "transcribed", transcript: existing.transcript };
+	}
+
+	// Try to acquire transcription lock — prevents webhook + frontend racing
+	const acquired = await acquireTranscriptionLock(env.MEETING_CACHE, meetingId, lockOwner, sessionId, 120);
+	if (!acquired) {
+		const currentOwner = await getTranscriptionLockOwner(env.MEETING_CACHE, meetingId, sessionId);
+		console.log("[transcribe-core] Lock held by", currentOwner, "— returning processing");
+		if (partial) {
+			return {
+				status: "processing",
+				message: `Another process is transcribing. ${partial.chunkIndex}/${partial.totalChunks} chunks done.`,
+				transcript: partial.transcriptParts.join("\n\n"),
+				chunksDone: partial.chunkIndex,
+				totalChunks: partial.totalChunks,
+			};
+		}
+		return {
+			status: "processing",
+			message: "Another process is transcribing.",
+			chunksDone: 0,
+			totalChunks: 0,
+		};
 	}
 
 	const authHeaders = { Authorization: `Bearer ${env.CF_API_TOKEN}` };
@@ -179,6 +203,7 @@ export async function transcribeCompositeAudio(
 					totalSize,
 				};
 				try { await env.MEETING_CACHE.put(partialKey, JSON.stringify(progress)); } catch { }
+				await releaseTranscriptionLock(env.MEETING_CACHE, meetingId, lockOwner, sessionId);
 
 				if (chunkTranscripts.length > 0) {
 					return {
@@ -226,6 +251,7 @@ export async function transcribeCompositeAudio(
 		}
 
 		try { await env.MEETING_CACHE.delete(partialKey); } catch { }
+		await releaseTranscriptionLock(env.MEETING_CACHE, meetingId, lockOwner, sessionId);
 
 		if (chunkTranscripts.length > 0) {
 			const transcriptText = dedupeTranscript(chunkTranscripts.join("\n\n"));
@@ -242,6 +268,7 @@ export async function transcribeCompositeAudio(
 			message: `No speech detected in the recording (${sizeMb.toFixed(1)} MB, ${numChunks} chunks analyzed). The audio appears to be silent or the microphone was muted.`,
 		};
 	} catch (e) {
+		await releaseTranscriptionLock(env.MEETING_CACHE, meetingId, lockOwner, sessionId);
 		return { status: "error", error: e instanceof Error ? e.message : String(e) };
 	}
 }
@@ -287,6 +314,13 @@ export async function generateMeetingSummary(
 	customPrompt?: string,
 	sessionId?: string,
 ): Promise<SummaryResult> {
+	// Dedup guard: re-check cache — another process may have already generated the summary
+	const cached = await getCachedResult(env.MEETING_CACHE, meetingId, sessionId);
+	if (cached?.summary) {
+		console.log("[summary-core] Summary already cached for", meetingId, "— skipping");
+		return { status: "ok", summary: cached.summary };
+	}
+
 	const context = await buildMeetingContext(env, meetingId);
 	const input = context + transcript;
 	const prompt = customPrompt || await resolvePrompt(env, meetingId);

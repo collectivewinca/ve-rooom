@@ -20,7 +20,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 		return jsonResponse(500, { error: "Server missing configuration" });
 	}
 
-	const result = await transcribeCompositeAudio(env, body.meetingId, body.audioUrl, body.sessionId);
+	const result = await transcribeCompositeAudio(env, body.meetingId, body.audioUrl, body.sessionId, "frontend");
 
 	switch (result.status) {
 		case "transcribed":

@@ -1,4 +1,4 @@
-import { getCachedResult, getMeetingMeta, getParticipants, saveCachedResult, getRecordingRefs, getMeetingPrompt, getUserPrompt, addSummaryVersion, getSummaryHistory, isEmailSent, markEmailSent, type SummaryVersion } from "../../lib/kv";
+import { getCachedResult, getMeetingMeta, getParticipants, saveCachedResult, getRecordingRefs, getMeetingPrompt, getUserPrompt, addSummaryVersion, getSummaryHistory, isEmailSent, markEmailSent, getTranscriptionLockOwner, type SummaryVersion } from "../../lib/kv";
 import { jsonResponse } from "../../lib/response";
 import { checkRateLimit } from "../../lib/rate-limit";
 import { parseSessionRecordings } from "../../lib/recordings";
@@ -162,6 +162,25 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env, w
 
 	// Cache hit: transcript only (no summary yet) — generate summary server-side
 	if (cached && cached.transcript && !cached.summary) {
+		// Check if webhook is actively processing this meeting
+		const lockOwner = await getTranscriptionLockOwner(env.MEETING_CACHE, meetingId, activeSessionId);
+		if (lockOwner && lockOwner.startsWith("webhook")) {
+			console.log("[summary.ts] Webhook is processing — deferring summary to webhook, returning processing");
+			const recRes = await fetchRecordings();
+			const parsed = await parseSessionRecordings(recRes, meetingId, activeSessionId);
+			return jsonResponse(200, {
+				status: "processing",
+				summary: undefined,
+				recordingUrl: parsed.recordingUrl || r2RecordingUrl,
+				audioRecordingUrl: parsed.audioRecordingUrl || r2AudioUrl,
+				r2Recordings: hasR2 ? r2Refs : undefined,
+				sessionId: activeSessionId,
+				transcript_text: cached.transcript,
+				prompt: customPrompt,
+				history: history.length > 0 ? history : undefined,
+			});
+		}
+
 		const recRes = await fetchRecordings();
 		const parsed = await parseSessionRecordings(recRes, meetingId, activeSessionId);
 
@@ -257,6 +276,23 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env, w
 	}
 
 	// RTK transcript empty — return needs_transcription so frontend triggers /api/transcribe
+	// But if the webhook is already transcribing, return processing instead
+	const lockOwner2 = await getTranscriptionLockOwner(env.MEETING_CACHE, meetingId, activeSessionId);
+	if (lockOwner2 && lockOwner2.startsWith("webhook")) {
+		console.log("[summary.ts] Webhook is transcribing — returning processing instead of needs_transcription");
+		return jsonResponse(200, {
+			status: "processing",
+			transcriptUrl,
+			recordingUrl: parsed.recordingUrl || r2RecordingUrl,
+			audioRecordingUrl: parsed.audioRecordingUrl || r2AudioUrl,
+			r2Recordings: hasR2 ? r2Refs : undefined,
+			sessionId: activeSessionId,
+			transcript_text: transcriptText,
+			prompt: customPrompt,
+			history: history.length > 0 ? history : undefined,
+		});
+	}
+
 	console.log("[summary.ts] RTK transcript empty — returning needs_transcription for client-side Whisper");
 	return jsonResponse(200, {
 		status: "needs_transcription",
