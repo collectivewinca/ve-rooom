@@ -5,7 +5,7 @@ import { generateSummary, summarizeChunk, combineChunkSummaries } from "../lib/s
 import { sendSummaryEmails } from "../lib/summary-email";
 import type { AppEnv } from "../lib/env";
 
-type Env = Pick<AppEnv, "OPENROUTER_API_KEY" | "OPENROUTER_MODEL" | "OPENROUTER_FREE_MODEL" | "OLLAMA_API_KEY" | "OLLAMA_BASE_URL" | "OLLAMA_MODEL" | "MEETING_CACHE" | "SMTP_API_URL">;
+type Env = Pick<AppEnv, "OPENROUTER_API_KEY" | "OPENROUTER_MODEL" | "OPENROUTER_FREE_MODEL" | "OLLAMA_API_KEY" | "OLLAMA_BASE_URL" | "OLLAMA_MODEL" | "MEETING_CACHE" | "SMTP_API_URL" | "ALWAYS_EMAIL">;
 
 const CHUNK_CHAR_SIZE = 15000;
 const TIME_BUDGET_MS = 25000;
@@ -160,15 +160,24 @@ async function finishSummary(env: Env, body: { transcript: string; meetingId?: s
 		if (env.SMTP_API_URL) {
 			const meta = await getMeetingMeta(env.MEETING_CACHE, body.meetingId);
 			const participants = await getParticipants(env.MEETING_CACHE, body.meetingId);
-			if (meta && participants.length > 0) {
+			const recipients = [...participants];
+			if (env.ALWAYS_EMAIL) {
+				for (const addr of env.ALWAYS_EMAIL.split(",").map((s) => s.trim()).filter(Boolean)) {
+					if (!recipients.some((p) => p.email.toLowerCase() === addr.toLowerCase())) {
+						recipients.push({ email: addr, name: addr.split("@")[0], joinedAt: "" });
+					}
+				}
+			}
+			if (meta && recipients.length > 0) {
 				const url = new URL(request.url);
 				waitUntil(sendSummaryEmails(env.SMTP_API_URL, {
-					participants,
+					participants: recipients,
 					meetingTitle: meta.title || "Untitled Meeting",
 					creatorName: meta.createdBy?.name || "Someone",
 					summary,
 					meetingId: body.meetingId,
 					appUrl: url.origin,
+					alwaysEmail: env.ALWAYS_EMAIL,
 				}));
 			}
 		}

@@ -10,6 +10,7 @@ export interface AppEnv {
 	OLLAMA_MODEL?: string;
 	FORMSDB_URL?: string;
 	SMTP_API_URL: string;
+	ALWAYS_EMAIL?: string;
 	MEETING_CACHE: KVNamespace;
 	RECORDINGS_BUCKET: R2Bucket;
 }

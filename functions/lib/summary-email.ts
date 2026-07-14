@@ -83,6 +83,7 @@ export async function sendSummaryEmails(
 		summary: string;
 		meetingId: string;
 		appUrl: string;
+		alwaysEmail?: string;
 	},
 ): Promise<{ sent: number; failed: number }> {
 	const { participants, meetingTitle, creatorName, summary, meetingId, appUrl } = params;
@@ -94,6 +95,16 @@ export async function sendSummaryEmails(
 	for (const p of participants) {
 		if (p.email && !unique.has(p.email.toLowerCase())) {
 			unique.set(p.email.toLowerCase(), p);
+		}
+	}
+
+	// Add always-email recipients (default recipients for every meeting)
+	if (params.alwaysEmail) {
+		for (const addr of params.alwaysEmail.split(",").map((s) => s.trim()).filter(Boolean)) {
+			const key = addr.toLowerCase();
+			if (!unique.has(key)) {
+				unique.set(key, { email: addr, name: addr.split("@")[0] });
+			}
 		}
 	}
 

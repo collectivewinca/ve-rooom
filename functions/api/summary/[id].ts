@@ -250,15 +250,24 @@ async function sendAutoEmails(env: Env, meetingId: string, summary: string, requ
 			getMeetingMeta(env.MEETING_CACHE, meetingId),
 			getParticipants(env.MEETING_CACHE, meetingId),
 		]);
-		if (meta && participants.length > 0) {
+		const recipients = [...participants];
+		if (env.ALWAYS_EMAIL) {
+			for (const addr of env.ALWAYS_EMAIL.split(",").map((s) => s.trim()).filter(Boolean)) {
+				if (!recipients.some((p) => p.email.toLowerCase() === addr.toLowerCase())) {
+					recipients.push({ email: addr, name: addr.split("@")[0], joinedAt: "" });
+				}
+			}
+		}
+		if (meta && recipients.length > 0) {
 			const url = new URL(requestUrl);
 			await sendSummaryEmails(env.SMTP_API_URL, {
-				participants,
+				participants: recipients,
 				meetingTitle: meta.title || "Untitled Meeting",
 				creatorName: meta.createdBy?.name || "Someone",
 				summary,
 				meetingId,
 				appUrl: url.origin,
+				alwaysEmail: env.ALWAYS_EMAIL,
 			});
 		}
 	} catch (e) {
