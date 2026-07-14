@@ -485,8 +485,8 @@
 
 .meeting-overlay-controls {
 	position: fixed;
-	top: 16px;
-	right: 16px;
+	top: 12px;
+	right: 64px;
 	z-index: 9999;
 	display: flex;
 	gap: 8px;
@@ -1626,8 +1626,8 @@
 
 	/* Meeting overlay controls */
 	.meeting-overlay-controls {
-		top: 8px;
-		right: 8px;
+		top: 4px;
+		right: 56px;
 		gap: 6px;
 	}
 
@@ -1881,8 +1881,8 @@
 	}
 
 	.meeting-overlay-controls {
-		top: max(8px, env(safe-area-inset-top));
-		right: max(8px, env(safe-area-inset-right));
+		top: max(4px, env(safe-area-inset-top));
+		right: max(56px, env(safe-area-inset-right));
 	}
 
 	.summary-page,

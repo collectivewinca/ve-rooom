@@ -13,8 +13,8 @@
 
 .meeting-overlay-controls {
 	position: fixed;
-	top: 16px;
-	right: 16px;
+	top: 12px;
+	right: 64px;
 	z-index: 9999;
 	display: flex;
 	gap: 8px;
