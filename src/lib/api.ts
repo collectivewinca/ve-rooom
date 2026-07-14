@@ -206,6 +206,20 @@ export async function fetchMeetings(): Promise<MeetingWithSessions[]> {
 	return data.meetings || [];
 }
 
+export async function getLatestEndedSessionId(meetingId: string): Promise<string | undefined> {
+	try {
+		const meetings = await fetchMeetings();
+		const meeting = meetings.find((m) => m.id === meetingId);
+		if (!meeting) return undefined;
+		const ended = meeting.sessions.filter((s) => s.status === "ENDED");
+		if (ended.length === 0) return undefined;
+		// Dashboard sorts sessions latest-first, so sessions[0] is the most recent ended session
+		return ended[0]?.id;
+	} catch {
+		return undefined;
+	}
+}
+
 export async function transcribeAudio(meetingId: string, audioUrl: string, sessionId?: string): Promise<TranscribeResponse> {
 	console.log("[api.ts] transcribeAudio — meetingId:", meetingId, "sessionId:", sessionId || "(none)", "audioUrl:", !!audioUrl);
 	const res = await fetch("/api/transcribe", {

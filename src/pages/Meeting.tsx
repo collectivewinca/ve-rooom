@@ -6,7 +6,7 @@ import {
 	useRealtimeKitMeeting,
 } from "@cloudflare/realtimekit-react";
 import { RtkMeeting } from "@cloudflare/realtimekit-react-ui";
-import { stopAllRecordings } from "../lib/api";
+import { stopAllRecordings, getLatestEndedSessionId } from "../lib/api";
 
 export default function Meeting() {
 	const { roomId } = useParams<{ roomId: string }>();
@@ -85,6 +85,7 @@ function MeetingView({ roomId }: { roomId: string }) {
 	const [copied, setCopied] = useState(false);
 	const [meetingEnded, setMeetingEnded] = useState(false);
 	const [stopping, setStopping] = useState(false);
+	const [sessionId, setSessionId] = useState<string | undefined>(undefined);
 	const stopRequested = useRef(false);
 	const meetingRef = useRef(meeting);
 	meetingRef.current = meeting;
@@ -107,6 +108,14 @@ function MeetingView({ roomId }: { roomId: string }) {
 			} catch (e) {
 				console.log("[MeetingView] Stop recordings failed:", e);
 			}
+			// Wait a moment for RTK to mark the session as ENDED, then resolve its ID
+			setTimeout(async () => {
+				const sid = await getLatestEndedSessionId(roomId);
+				if (sid) {
+					console.log("[MeetingView] Resolved session ID:", sid);
+					setSessionId(sid);
+				}
+			}, 3000);
 			setStopping(false);
 			setMeetingEnded(true);
 		};
@@ -161,7 +170,7 @@ function MeetingView({ roomId }: { roomId: string }) {
 					</span>
 				)}
 				{meetingEnded && (
-					<a href={`/summary/${roomId}`} className="summary-link">
+					<a href={`/summary/${roomId}${sessionId ? `?sessionId=${sessionId}` : ""}`} className="summary-link">
 						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ width: 14, height: 14 }}>
 							<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
 							<polyline points="14 2 14 8 20 8"/>
