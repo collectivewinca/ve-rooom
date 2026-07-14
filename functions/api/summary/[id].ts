@@ -1,4 +1,4 @@
-import { getCachedResult, getMeetingMeta, getParticipants, saveCachedResult, getRecordingRefs, getMeetingPrompt, getUserPrompt, addSummaryVersion, getSummaryHistory, type SummaryVersion } from "../../lib/kv";
+import { getCachedResult, getMeetingMeta, getParticipants, saveCachedResult, getRecordingRefs, getMeetingPrompt, getUserPrompt, addSummaryVersion, getSummaryHistory, isEmailSent, markEmailSent, type SummaryVersion } from "../../lib/kv";
 import { jsonResponse } from "../../lib/response";
 import { checkRateLimit } from "../../lib/rate-limit";
 import { parseSessionRecordings } from "../../lib/recordings";
@@ -19,6 +19,25 @@ async function resolvePrompt(env: Env, meetingId: string): Promise<string | unde
 		}
 	}
 	return prompt || undefined;
+}
+
+async function buildMeetingContext(env: Env, meetingId: string): Promise<string> {
+	try {
+		const [meta, participants] = await Promise.all([
+			getMeetingMeta(env.MEETING_CACHE, meetingId),
+			getParticipants(env.MEETING_CACHE, meetingId),
+		]);
+		if (!meta) return "";
+		const title = meta.title || "Untitled Meeting";
+		const hostName = meta.createdBy?.name || "Unknown";
+		const date = new Date(meta.createdAt).toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+		const participantNames = participants.length > 0
+			? participants.map((p) => p.name || p.email).join(", ")
+			: "Unknown";
+		return `Meeting Context:\n- Title: ${title}\n- Host: ${hostName}\n- Date: ${date}\n- Participants: ${participantNames}\n\nUse this context to make your summary more accurate. Reference participants by name when possible.\n\n---\n\n`;
+	} catch {
+		return "";
+	}
 }
 
 export const onRequestGet: PagesFunction<Env> = async ({ params, request, env, waitUntil }) => {
@@ -152,14 +171,14 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env, w
 			});
 		}
 
-		summary = await generateSummary(cached.transcript, env, customPrompt);
+		summary = await generateSummary(await buildMeetingContext(env, meetingId) + cached.transcript, env, customPrompt);
 		if (summary) {
 			await saveCachedResult(env.MEETING_CACHE, meetingId, { transcript: cached.transcript, summary, cachedAt: cached.cachedAt });
 			const newVersion: SummaryVersion = { summary, prompt: customPrompt, createdAt: new Date().toISOString() };
 			await addSummaryVersion(env.MEETING_CACHE, meetingId, newVersion);
 			updatedHistory = [...history, newVersion];
 			if (env.SMTP_API_URL) {
-				waitUntil(sendAutoEmails(env, meetingId, summary, request.url));
+				waitUntil(sendAutoEmails(env, meetingId, summary, request.url, session, parsed));
 			}
 		}
 
@@ -192,7 +211,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env, w
 
 	const transcriptLines = transcriptText.trim().split("\n").filter((l) => l.trim());
 	if (transcriptLines.length > 0) {
-		const summary = await generateSummary(transcriptText, env, customPrompt);
+		const summary = await generateSummary(await buildMeetingContext(env, meetingId) + transcriptText, env, customPrompt);
 		await saveCachedResult(env.MEETING_CACHE, meetingId, { transcript: transcriptText, summary: summary || "", cachedAt: new Date().toISOString() });
 		let updatedHistory = history;
 		if (summary) {
@@ -200,7 +219,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env, w
 			await addSummaryVersion(env.MEETING_CACHE, meetingId, newVersion);
 			updatedHistory = [...history, newVersion];
 			if (env.SMTP_API_URL) {
-				waitUntil(sendAutoEmails(env, meetingId, summary, request.url));
+				waitUntil(sendAutoEmails(env, meetingId, summary, request.url, session, parsed, transcriptUrl));
 			}
 		}
 		return jsonResponse(200, {
@@ -244,8 +263,22 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env, w
 	});
 };
 
-async function sendAutoEmails(env: Env, meetingId: string, summary: string, requestUrl: string): Promise<void> {
+async function sendAutoEmails(
+	env: Env,
+	meetingId: string,
+	summary: string,
+	requestUrl: string,
+	sessionInfo: { ended_at?: string },
+	recordingInfo: { recordingUrl?: string; audioRecordingUrl?: string },
+	transcriptUrl?: string,
+): Promise<void> {
 	try {
+		// Only auto-email on the first summary — re-generates use the Send Email button
+		const alreadySent = await isEmailSent(env.MEETING_CACHE, meetingId);
+		if (alreadySent) {
+			console.log("[summary.ts] Email already sent for", meetingId, "— skipping auto-email");
+			return;
+		}
 		const [meta, participants] = await Promise.all([
 			getMeetingMeta(env.MEETING_CACHE, meetingId),
 			getParticipants(env.MEETING_CACHE, meetingId),
@@ -260,7 +293,7 @@ async function sendAutoEmails(env: Env, meetingId: string, summary: string, requ
 		}
 		if (meta && recipients.length > 0) {
 			const url = new URL(requestUrl);
-			await sendSummaryEmails(env.SMTP_API_URL, {
+			const result = await sendSummaryEmails(env.SMTP_API_URL, {
 				participants: recipients,
 				meetingTitle: meta.title || "Untitled Meeting",
 				creatorName: meta.createdBy?.name || "Someone",
@@ -268,7 +301,14 @@ async function sendAutoEmails(env: Env, meetingId: string, summary: string, requ
 				meetingId,
 				appUrl: url.origin,
 				alwaysEmail: env.ALWAYS_EMAIL,
+				meetingDate: meta.createdAt,
+				endedAt: sessionInfo.ended_at,
+				recordingUrl: recordingInfo.recordingUrl || undefined,
+				transcriptUrl: transcriptUrl || undefined,
 			});
+			if (result.sent > 0) {
+				await markEmailSent(env.MEETING_CACHE, meetingId);
+			}
 		}
 	} catch (e) {
 		console.log("[summary.ts] Auto email error:", e);

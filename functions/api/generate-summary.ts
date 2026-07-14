@@ -1,4 +1,4 @@
-import { saveCachedResult, getMeetingPrompt, getUserPrompt, getMeetingMeta, getParticipants, addSummaryVersion } from "../lib/kv";
+import { saveCachedResult, getMeetingPrompt, getUserPrompt, getMeetingMeta, getParticipants, addSummaryVersion, isEmailSent, markEmailSent } from "../lib/kv";
 import { jsonResponse } from "../lib/response";
 import { checkRateLimit } from "../lib/rate-limit";
 import { generateSummary, summarizeChunk, combineChunkSummaries } from "../lib/summarizer";
@@ -44,6 +44,25 @@ async function resolvePrompt(env: Env, meetingId?: string): Promise<string | und
 	return prompt || undefined;
 }
 
+async function buildMeetingContext(env: Env, meetingId: string): Promise<string> {
+	try {
+		const [meta, participants] = await Promise.all([
+			getMeetingMeta(env.MEETING_CACHE, meetingId),
+			getParticipants(env.MEETING_CACHE, meetingId),
+		]);
+		if (!meta) return "";
+		const title = meta.title || "Untitled Meeting";
+		const hostName = meta.createdBy?.name || "Unknown";
+		const date = new Date(meta.createdAt).toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+		const participantNames = participants.length > 0
+			? participants.map((p) => p.name || p.email).join(", ")
+			: "Unknown";
+		return `Meeting Context:\n- Title: ${title}\n- Host: ${hostName}\n- Date: ${date}\n- Participants: ${participantNames}\n\nUse this context to make your summary more accurate. Reference participants by name when possible.\n\n---\n\n`;
+	} catch {
+		return "";
+	}
+}
+
 export const onRequestPost: PagesFunction<Env> = async ({ request, env, waitUntil }) => {
 	const rl = await checkRateLimit(env.MEETING_CACHE, request);
 	if (!rl.allowed) return jsonResponse(429, { error: "Too many requests. Please slow down." });
@@ -56,11 +75,13 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env, waitUnti
 
 	const input = dedupe(body.transcript);
 	const customPrompt = body.prompt || await resolvePrompt(env, body.meetingId);
+	const meetingContext = body.meetingId ? await buildMeetingContext(env, body.meetingId) : "";
+	const contextualizedInput = meetingContext + input;
 
 	// Short transcript — single LLM call (existing path)
-	if (input.length <= DIRECT_MAX_CHARS) {
-		console.log("[generate-summary] Short transcript:", input.length, "chars — single call");
-		const summary = await generateSummary(input, env, customPrompt);
+	if (contextualizedInput.length <= DIRECT_MAX_CHARS) {
+		console.log("[generate-summary] Short transcript:", contextualizedInput.length, "chars — single call");
+		const summary = await generateSummary(contextualizedInput, env, customPrompt);
 		if (summary) {
 			await finishSummary(env, body, summary, customPrompt, waitUntil, request);
 			return jsonResponse(200, { status: "ok", summary });
@@ -82,12 +103,12 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env, waitUnti
 		}
 	} catch { }
 
-	const numChunks = Math.ceil(input.length / CHUNK_CHAR_SIZE);
+	const numChunks = Math.ceil(contextualizedInput.length / CHUNK_CHAR_SIZE);
 	const chunkSummaries: string[] = [...(partial?.chunkSummaries || [])];
 	let startChunk = partial?.chunkIndex ?? 0;
 	const startTime = Date.now();
 
-	console.log("[generate-summary] Map-reduce:", input.length, "chars →", numChunks, "chunks of", CHUNK_CHAR_SIZE, "chars");
+	console.log("[generate-summary] Map-reduce:", contextualizedInput.length, "chars →", numChunks, "chunks of", CHUNK_CHAR_SIZE, "chars");
 
 	for (let i = startChunk; i < numChunks; i++) {
 		const elapsed = Date.now() - startTime;
@@ -110,8 +131,8 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env, waitUnti
 		}
 
 		const start = i * CHUNK_CHAR_SIZE;
-		const end = Math.min(start + CHUNK_CHAR_SIZE, input.length);
-		const chunkText = input.slice(start, end);
+		const end = Math.min(start + CHUNK_CHAR_SIZE, contextualizedInput.length);
+		const chunkText = contextualizedInput.slice(start, end);
 		console.log(`[generate-summary] Chunk ${i + 1}/${numChunks} — chars ${start}-${end} (${chunkText.length} chars)`);
 
 		try {
@@ -157,7 +178,9 @@ async function finishSummary(env: Env, body: { transcript: string; meetingId?: s
 	await saveCachedResult(env.MEETING_CACHE, body.meetingId || "", { transcript: body.transcript, summary, cachedAt: new Date().toISOString() });
 	if (body.meetingId) {
 		await addSummaryVersion(env.MEETING_CACHE, body.meetingId, { summary, prompt: customPrompt, createdAt: new Date().toISOString() });
-		if (env.SMTP_API_URL) {
+		// Only auto-email on the first summary — re-generates use the Send Email button
+		const alreadySent = await isEmailSent(env.MEETING_CACHE, body.meetingId);
+		if (env.SMTP_API_URL && !alreadySent) {
 			const meta = await getMeetingMeta(env.MEETING_CACHE, body.meetingId);
 			const participants = await getParticipants(env.MEETING_CACHE, body.meetingId);
 			const recipients = [...participants];
@@ -178,7 +201,8 @@ async function finishSummary(env: Env, body: { transcript: string; meetingId?: s
 					meetingId: body.meetingId,
 					appUrl: url.origin,
 					alwaysEmail: env.ALWAYS_EMAIL,
-				}));
+					meetingDate: meta.createdAt,
+				}).then(() => markEmailSent(env.MEETING_CACHE, body.meetingId!)));
 			}
 		}
 	}

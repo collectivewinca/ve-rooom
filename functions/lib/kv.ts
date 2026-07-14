@@ -196,3 +196,20 @@ export async function getSummaryHistory(kv: KVNamespace, meetingId: string): Pro
 		return [];
 	}
 }
+
+export async function markEmailSent(kv: KVNamespace, meetingId: string): Promise<void> {
+	try {
+		await kv.put(`meeting:${meetingId}:email-sent`, new Date().toISOString());
+	} catch (e) {
+		console.log("[kv] markEmailSent error:", e);
+	}
+}
+
+export async function isEmailSent(kv: KVNamespace, meetingId: string): Promise<boolean> {
+	try {
+		const raw = await kv.get(`meeting:${meetingId}:email-sent`);
+		return !!raw;
+	} catch {
+		return false;
+	}
+}

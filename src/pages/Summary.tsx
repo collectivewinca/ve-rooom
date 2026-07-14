@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 import {
 	getSummary, transcribeAudio, generateSummaryFromTranscript, generateSummaryWithRetry, scanR2Recordings,
 	getMeetingPrompt, saveMeetingPrompt, saveUserDefaultPrompt, getUserDefaultPrompt,
+	sendSummaryEmail,
 	type SummaryResponse, type SummaryVersion,
 } from "../lib/api";
 
@@ -69,6 +70,8 @@ export default function Summary() {
 	const transcribingRef = useRef(false);
 	const [resummarizing, setResummarizing] = useState(false);
 	const [resummarizeStatus, setResummarizeStatus] = useState("");
+	const [sendingEmail, setSendingEmail] = useState(false);
+	const [emailStatus, setEmailStatus] = useState("");
 
 	const [promptText, setPromptText] = useState("");
 	const [showPromptEditor, setShowPromptEditor] = useState(false);
@@ -148,6 +151,25 @@ export default function Summary() {
 		setPromptText(DEFAULT_PROMPT);
 		setPromptDirty(true);
 	}, []);
+
+	const handleSendEmail = useCallback(async () => {
+		if (!roomId || sendingEmail) return;
+		setSendingEmail(true);
+		setEmailStatus("Sending email with latest summary...");
+		try {
+			const result = await sendSummaryEmail(roomId);
+			if (result.status === "ok" && result.sent) {
+				setEmailStatus(`Email sent to ${result.sent} recipient(s).`);
+			} else {
+				setEmailStatus(result.message || "Email send failed.");
+			}
+		} catch (e) {
+			setEmailStatus("Failed: " + (e instanceof Error ? e.message : String(e)));
+		} finally {
+			setSendingEmail(false);
+			setTimeout(() => setEmailStatus(""), 5000);
+		}
+	}, [roomId, sendingEmail]);
 
 	useEffect(() => {
 		if (!roomId) return;
@@ -346,26 +368,37 @@ export default function Summary() {
 				</button>
 			</div>
 
-			{showRegenerateBar && (
-				<div className="summary-toolbar">
-					<button
-						className="btn-secondary"
-						onClick={() => regenerateSummary()}
-						disabled={resummarizing || transcribing}
-						style={{ width: "auto", margin: 0 }}
-					>
-						{resummarizing ? "Generating..." : "Re-generate Summary"}
-					</button>
-					<button
-						className="btn-outline"
-						onClick={() => setShowPromptEditor((v) => !v)}
-						style={{ width: "auto", margin: 0 }}
-					>
-						{showPromptEditor ? "Hide Prompt" : "Customize Prompt"}
-					</button>
-					{resummarizeStatus && (
-						<span className="toolbar-status">{resummarizeStatus}</span>
-					)}
+		{showRegenerateBar && (
+			<div className="summary-toolbar">
+				<button
+					className="btn-secondary"
+					onClick={() => regenerateSummary()}
+					disabled={resummarizing || transcribing}
+					style={{ width: "auto", margin: 0 }}
+				>
+					{resummarizing ? "Generating..." : "Re-generate Summary"}
+				</button>
+				<button
+					className="btn-outline"
+					onClick={() => setShowPromptEditor((v) => !v)}
+					style={{ width: "auto", margin: 0 }}
+				>
+					{showPromptEditor ? "Hide Prompt" : "Customize Prompt"}
+				</button>
+				<button
+					className="btn-outline"
+					onClick={handleSendEmail}
+					disabled={sendingEmail || !data?.summary}
+					style={{ width: "auto", margin: 0 }}
+				>
+					{sendingEmail ? "Sending..." : "Send Summary Email"}
+				</button>
+				{resummarizeStatus && (
+					<span className="toolbar-status">{resummarizeStatus}</span>
+				)}
+				{emailStatus && (
+					<span className="toolbar-status">{emailStatus}</span>
+				)}
 				</div>
 			)}
 

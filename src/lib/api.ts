@@ -377,3 +377,20 @@ export async function saveMeetingPrompt(meetingId: string, prompt: string): Prom
 		return false;
 	}
 }
+
+export async function sendSummaryEmail(meetingId: string): Promise<{ status: string; sent?: number; failed?: number; message?: string }> {
+	console.log("[api.ts] sendSummaryEmail — meetingId:", meetingId);
+	const res = await fetch("/api/send-summary-email", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ meetingId }),
+	});
+	if (!res.ok) {
+		const errText = await res.text();
+		console.log("[api.ts] sendSummaryEmail failed:", errText);
+		throw new Error(`Send email failed: ${res.status}`);
+	}
+	const data = await res.json() as { status: string; sent?: number; failed?: number; message?: string };
+	console.log("[api.ts] sendSummaryEmail result:", data.status, "sent:", data.sent);
+	return data;
+}
