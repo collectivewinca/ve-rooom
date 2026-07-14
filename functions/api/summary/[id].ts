@@ -132,8 +132,27 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env, w
 		const recRes = await fetchRecordings();
 		const parsed = await parseSessionRecordings(recRes, meetingId, session.id);
 
-		const summary = await generateSummary(cached.transcript, env, customPrompt);
+		const transcriptLen = cached.transcript.length;
+		let summary: string | undefined;
 		let updatedHistory = history;
+
+		if (transcriptLen > 60000) {
+			// Long transcript — defer to frontend map-reduce (avoids 30s timeout)
+			console.log("[summary.ts] Transcript", transcriptLen, "chars — deferring summary to frontend map-reduce");
+			return jsonResponse(200, {
+				status: "no_summary",
+				summary: undefined,
+				recordingUrl: parsed.recordingUrl || r2RecordingUrl,
+				audioRecordingUrl: parsed.audioRecordingUrl || r2AudioUrl,
+				r2Recordings: hasR2 ? r2Refs : undefined,
+				sessionId: session.id,
+				transcript_text: cached.transcript,
+				prompt: customPrompt,
+				history: updatedHistory.length > 0 ? updatedHistory : undefined,
+			});
+		}
+
+		summary = await generateSummary(cached.transcript, env, customPrompt);
 		if (summary) {
 			await saveCachedResult(env.MEETING_CACHE, meetingId, { transcript: cached.transcript, summary, cachedAt: cached.cachedAt });
 			const newVersion: SummaryVersion = { summary, prompt: customPrompt, createdAt: new Date().toISOString() };

@@ -55,9 +55,11 @@ export interface TranscribeResponse {
 }
 
 export interface GenerateSummaryResponse {
-	status: "ok" | "no_summary";
+	status: "ok" | "no_summary" | "processing";
 	summary?: string;
 	message?: string;
+	chunksDone?: number;
+	totalChunks?: number;
 }
 
 export interface SessionRecording {
@@ -237,6 +239,28 @@ export async function generateSummaryFromTranscript(transcript: string, meetingI
 	const data = await res.json() as GenerateSummaryResponse;
 	console.log("[api.ts] generateSummary result:", data.status, "summary:", data.summary?.length || 0, "chars");
 	return data;
+}
+
+export async function generateSummaryWithRetry(
+	transcript: string,
+	meetingId: string,
+	prompt?: string,
+	onProgress?: (done: number, total: number) => void,
+): Promise<GenerateSummaryResponse> {
+	for (let attempt = 0; attempt < 60; attempt++) {
+		const result = await generateSummaryFromTranscript(transcript, meetingId, prompt);
+		if (result.status === "ok" && result.summary) {
+			return result;
+		}
+		if (result.status === "processing") {
+			onProgress?.(result.chunksDone || 0, result.totalChunks || 0);
+			console.log(`[api.ts] generateSummary processing — retry in 3s (${result.chunksDone}/${result.totalChunks})`);
+			await new Promise((r) => setTimeout(r, 3000));
+			continue;
+		}
+		return result;
+	}
+	return { status: "no_summary", message: "Timed out waiting for summary." };
 }
 
 export async function startCompositeRecording(meetingId: string): Promise<RecordingStartResponse> {

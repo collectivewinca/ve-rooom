@@ -3,7 +3,7 @@ import { useParams, useNavigate, Link, useSearchParams } from "react-router-dom"
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
-	getSummary, transcribeAudio, generateSummaryFromTranscript, scanR2Recordings,
+	getSummary, transcribeAudio, generateSummaryFromTranscript, generateSummaryWithRetry, scanR2Recordings,
 	getMeetingPrompt, saveMeetingPrompt, saveUserDefaultPrompt, getUserDefaultPrompt,
 	type SummaryResponse, type SummaryVersion,
 } from "../lib/api";
@@ -90,14 +90,17 @@ export default function Summary() {
 		setResummarizeStatus("Generating AI summary...");
 		try {
 			const promptToSend = overridePrompt !== undefined ? overridePrompt : (promptDirty ? promptText : undefined);
-			const result = await generateSummaryFromTranscript(data.transcript_text, roomId, promptToSend);
+			const result = await generateSummaryWithRetry(
+				data.transcript_text, roomId, promptToSend,
+				(done, total) => setResummarizeStatus(`Summarizing... chunk ${done}/${total}`),
+			);
 			if (result.status === "ok" && result.summary) {
 				setResummarizeStatus("Summary generated!");
 				const newVersion: SummaryVersion = { summary: result.summary, prompt: promptToSend, createdAt: new Date().toISOString() };
 				setData((prev) => {
 					if (!prev) return prev;
 					const prevHistory = prev.history || [];
-					const updated = { ...prev, status: "ok" as const, summary: result.summary, history: [...prevHistory, newVersion] };
+					const updated = { ...prev, status: "ok" as const, summary: result.summary!, history: [...prevHistory, newVersion] };
 					return updated;
 				});
 				setVersionIndex(-1);
@@ -168,12 +171,17 @@ export default function Summary() {
 						return;
 					}
 					timerId = setTimeout(poll, 5000);
-				} else if (res.status === "needs_transcription") {
-					setLoading(false);
-					if (!transcribingRef.current && res.audioRecordingUrl) {
-						triggerTranscription(res);
-					}
-				} else if (res.status === "no_ended_session") {
+			} else if (res.status === "needs_transcription") {
+				setLoading(false);
+				if (!transcribingRef.current && res.audioRecordingUrl) {
+					triggerTranscription(res);
+				}
+			} else if (res.status === "no_summary" && res.transcript_text && !res.summary) {
+				setLoading(false);
+				if (!transcribingRef.current) {
+					triggerTranscription(res);
+				}
+			} else if (res.status === "no_ended_session") {
 					setLoading(true);
 					if (currentPoll >= MAX_POLLS) {
 						setPollTimedOut(true);
@@ -245,7 +253,10 @@ export default function Summary() {
 		if (summaryData.transcript_text) {
 			setTranscribeStatus("Transcript cached! Generating AI summary...");
 			try {
-				const summaryResult = await generateSummaryFromTranscript(summaryData.transcript_text, roomId);
+				const summaryResult = await generateSummaryWithRetry(
+					summaryData.transcript_text, roomId, undefined,
+					(done, total) => setTranscribeStatus(`Summarizing... chunk ${done}/${total}`),
+				);
 				if (summaryResult.status === "ok" && summaryResult.summary) {
 					setTranscribeStatus("Summary generated!");
 					setData({ ...summaryData, status: "ok", summary: summaryResult.summary });
@@ -269,7 +280,10 @@ export default function Summary() {
 				setTranscribeStatus("Transcript ready! Generating AI summary...");
 				setData({ ...summaryData, transcript_text: result.transcript });
 
-				const summaryResult = await generateSummaryFromTranscript(result.transcript, roomId);
+				const summaryResult = await generateSummaryWithRetry(
+					result.transcript, roomId, undefined,
+					(done, total) => setTranscribeStatus(`Summarizing... chunk ${done}/${total}`),
+				);
 
 				if (summaryResult.status === "ok" && summaryResult.summary) {
 					setTranscribeStatus("Summary generated!");

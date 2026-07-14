@@ -1,13 +1,21 @@
 import { saveCachedResult, getMeetingPrompt, getUserPrompt, getMeetingMeta, getParticipants, addSummaryVersion } from "../lib/kv";
 import { jsonResponse } from "../lib/response";
 import { checkRateLimit } from "../lib/rate-limit";
-import { generateSummary } from "../lib/summarizer";
+import { generateSummary, summarizeChunk, combineChunkSummaries } from "../lib/summarizer";
 import { sendSummaryEmails } from "../lib/summary-email";
 import type { AppEnv } from "../lib/env";
 
 type Env = Pick<AppEnv, "OPENROUTER_API_KEY" | "OPENROUTER_MODEL" | "OPENROUTER_FREE_MODEL" | "OLLAMA_API_KEY" | "OLLAMA_BASE_URL" | "OLLAMA_MODEL" | "MEETING_CACHE" | "SMTP_API_URL">;
 
-const MAX_CHARS = 60000;
+const CHUNK_CHAR_SIZE = 15000;
+const TIME_BUDGET_MS = 25000;
+const DIRECT_MAX_CHARS = 60000;
+
+interface SummaryPartial {
+	chunkIndex: number;
+	chunkSummaries: string[];
+	totalChunks: number;
+}
 
 function dedupe(text: string): string {
 	const lines = text.split("\n");
@@ -24,6 +32,18 @@ function dedupe(text: string): string {
 	return out.join("\n");
 }
 
+async function resolvePrompt(env: Env, meetingId?: string): Promise<string | undefined> {
+	if (!meetingId) return undefined;
+	let prompt = await getMeetingPrompt(env.MEETING_CACHE, meetingId);
+	if (!prompt) {
+		const meta = await getMeetingMeta(env.MEETING_CACHE, meetingId);
+		if (meta?.createdBy?.email) {
+			prompt = await getUserPrompt(env.MEETING_CACHE, meta.createdBy.email);
+		}
+	}
+	return prompt || undefined;
+}
+
 export const onRequestPost: PagesFunction<Env> = async ({ request, env, waitUntil }) => {
 	const rl = await checkRateLimit(env.MEETING_CACHE, request);
 	if (!rl.allowed) return jsonResponse(429, { error: "Too many requests. Please slow down." });
@@ -34,45 +54,123 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env, waitUnti
 		return jsonResponse(400, { error: "transcript is required" });
 	}
 
-	let input = dedupe(body.transcript);
-	if (input.length > MAX_CHARS) {
-		input = input.slice(0, MAX_CHARS) + "\n\n[...]";
+	const input = dedupe(body.transcript);
+	const customPrompt = body.prompt || await resolvePrompt(env, body.meetingId);
+
+	// Short transcript — single LLM call (existing path)
+	if (input.length <= DIRECT_MAX_CHARS) {
+		console.log("[generate-summary] Short transcript:", input.length, "chars — single call");
+		const summary = await generateSummary(input, env, customPrompt);
+		if (summary) {
+			await finishSummary(env, body, summary, customPrompt, waitUntil, request);
+			return jsonResponse(200, { status: "ok", summary });
+		}
+		return jsonResponse(200, { status: "no_summary", message: "Could not generate summary." });
 	}
 
-	let customPrompt = body.prompt;
-	if (!customPrompt && body.meetingId) {
-		customPrompt = await getMeetingPrompt(env.MEETING_CACHE, body.meetingId) || undefined;
-		if (!customPrompt) {
-			const meta = await getMeetingMeta(env.MEETING_CACHE, body.meetingId);
-			if (meta?.createdBy?.email) {
-				customPrompt = await getUserPrompt(env.MEETING_CACHE, meta.createdBy.email) || undefined;
+	// Long transcript — map-reduce with KV partial resume
+	const meetingId = body.meetingId || "";
+	const partialKey = `meeting:${meetingId}:summary-partial`;
+
+	// Load existing partial
+	let partial: SummaryPartial | null = null;
+	try {
+		const rawPartial = await env.MEETING_CACHE.get(partialKey);
+		if (rawPartial) {
+			partial = JSON.parse(rawPartial) as SummaryPartial;
+			console.log("[generate-summary] Resuming summary map-reduce from chunk", partial.chunkIndex + 1, "/", partial.totalChunks);
+		}
+	} catch { }
+
+	const numChunks = Math.ceil(input.length / CHUNK_CHAR_SIZE);
+	const chunkSummaries: string[] = [...(partial?.chunkSummaries || [])];
+	let startChunk = partial?.chunkIndex ?? 0;
+	const startTime = Date.now();
+
+	console.log("[generate-summary] Map-reduce:", input.length, "chars →", numChunks, "chunks of", CHUNK_CHAR_SIZE, "chars");
+
+	for (let i = startChunk; i < numChunks; i++) {
+		const elapsed = Date.now() - startTime;
+		if (elapsed > TIME_BUDGET_MS) {
+			console.log("[generate-summary] Time budget exceeded at chunk", i + 1, "/", numChunks, "— saving partial");
+			const progress: SummaryPartial = {
+				chunkIndex: i,
+				chunkSummaries: chunkSummaries,
+				totalChunks: numChunks,
+			};
+			try {
+				await env.MEETING_CACHE.put(partialKey, JSON.stringify(progress));
+			} catch { }
+			return jsonResponse(200, {
+				status: "processing",
+				message: `Summarized ${i}/${numChunks} chunks. Continue polling.`,
+				chunksDone: i,
+				totalChunks: numChunks,
+			});
+		}
+
+		const start = i * CHUNK_CHAR_SIZE;
+		const end = Math.min(start + CHUNK_CHAR_SIZE, input.length);
+		const chunkText = input.slice(start, end);
+		console.log(`[generate-summary] Chunk ${i + 1}/${numChunks} — chars ${start}-${end} (${chunkText.length} chars)`);
+
+		try {
+			const chunkSummary = await summarizeChunk(chunkText, env);
+			if (chunkSummary) {
+				chunkSummaries.push(chunkSummary);
+				console.log(`[generate-summary] Chunk ${i + 1} summary:`, chunkSummary.length, "chars");
+			} else {
+				console.log(`[generate-summary] Chunk ${i + 1} failed — skipping`);
 			}
+		} catch (e) {
+			console.log(`[generate-summary] Chunk ${i + 1} error:`, e instanceof Error ? e.message : String(e));
 		}
 	}
 
-	const summary = await generateSummary(input, env, customPrompt);
-	if (summary) {
-		await saveCachedResult(env.MEETING_CACHE, body.meetingId || "", { transcript: body.transcript, summary, cachedAt: new Date().toISOString() });
-		if (body.meetingId) {
-			await addSummaryVersion(env.MEETING_CACHE, body.meetingId, { summary, prompt: customPrompt, createdAt: new Date().toISOString() });
-			if (env.SMTP_API_URL) {
-				const meta = await getMeetingMeta(env.MEETING_CACHE, body.meetingId);
-				const participants = await getParticipants(env.MEETING_CACHE, body.meetingId);
-				if (meta && participants.length > 0) {
-					const url = new URL(request.url);
-					waitUntil(sendSummaryEmails(env.SMTP_API_URL, {
-						participants,
-						meetingTitle: meta.title || "Untitled Meeting",
-						creatorName: meta.createdBy?.name || "Someone",
-						summary,
-						meetingId: body.meetingId,
-						appUrl: url.origin,
-					}));
-				}
-			}
-		}
-		return jsonResponse(200, { status: "ok", summary });
+	// All chunks summarized — reduce step
+	try { await env.MEETING_CACHE.delete(partialKey); } catch { }
+
+	if (chunkSummaries.length === 0) {
+		return jsonResponse(200, { status: "no_summary", message: "All chunk summaries failed." });
 	}
-	return jsonResponse(200, { status: "no_summary", message: "Could not generate summary." });
+
+	const combined = chunkSummaries.map((s, i) => `### Part ${i + 1} of ${numChunks}\n\n${s}`).join("\n\n---\n\n");
+	console.log("[generate-summary] Combining", chunkSummaries.length, "chunk summaries →", combined.length, "chars");
+
+	let finalSummary: string | undefined;
+	if (combined.length <= DIRECT_MAX_CHARS) {
+		finalSummary = await combineChunkSummaries(combined, env, customPrompt);
+	} else {
+		// Chunk summaries too large — truncate to fit one call
+		console.log("[generate-summary] Combined too large, truncating to", DIRECT_MAX_CHARS);
+		finalSummary = await combineChunkSummaries(combined.slice(0, DIRECT_MAX_CHARS) + "\n\n[...]", env, customPrompt);
+	}
+
+	if (finalSummary) {
+		await finishSummary(env, body, finalSummary, customPrompt, waitUntil, request);
+		return jsonResponse(200, { status: "ok", summary: finalSummary });
+	}
+	return jsonResponse(200, { status: "no_summary", message: "Could not combine chunk summaries." });
 };
 
+async function finishSummary(env: Env, body: { transcript: string; meetingId?: string }, summary: string, customPrompt: string | undefined, waitUntil: (p: Promise<unknown>) => void, request: Request) {
+	await saveCachedResult(env.MEETING_CACHE, body.meetingId || "", { transcript: body.transcript, summary, cachedAt: new Date().toISOString() });
+	if (body.meetingId) {
+		await addSummaryVersion(env.MEETING_CACHE, body.meetingId, { summary, prompt: customPrompt, createdAt: new Date().toISOString() });
+		if (env.SMTP_API_URL) {
+			const meta = await getMeetingMeta(env.MEETING_CACHE, body.meetingId);
+			const participants = await getParticipants(env.MEETING_CACHE, body.meetingId);
+			if (meta && participants.length > 0) {
+				const url = new URL(request.url);
+				waitUntil(sendSummaryEmails(env.SMTP_API_URL, {
+					participants,
+					meetingTitle: meta.title || "Untitled Meeting",
+					creatorName: meta.createdBy?.name || "Someone",
+					summary,
+					meetingId: body.meetingId,
+					appUrl: url.origin,
+				}));
+			}
+		}
+	}
+}

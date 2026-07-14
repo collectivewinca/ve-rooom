@@ -42,6 +42,73 @@ export async function generateSummary(
 	customPrompt?: string,
 ): Promise<string | undefined> {
 	const systemPrompt = customPrompt && customPrompt.trim().length > 0 ? customPrompt.trim() : SUMMARY_SYSTEM_PROMPT;
+	return callLLM(transcriptText, systemPrompt, env);
+}
+
+const CHUNK_SUMMARY_PROMPT = `You are summarizing a portion (chunk) of a long meeting transcript. This is one of several chunks that will be combined later, so focus ONLY on this section.
+
+Produce a structured summary of THIS chunk:
+- Key topics discussed (with specifics)
+- Any decisions made
+- Any action items or follow-ups
+- Notable quotes or important points
+- Any open questions raised
+
+Do NOT write a general meeting overview — that will be done in the final combine step. Just extract the substance of THIS chunk. Use bullet points and be specific with names, numbers, and details.`;
+
+const COMBINE_PROMPT = `You are given summaries of several chunks from a long meeting. Each chunk summary covers a portion of the meeting in order. Combine them into one comprehensive, well-structured Markdown summary.
+
+Here is the format you MUST follow:
+
+## Meeting Summary
+Write a detailed overview paragraph (4-8 sentences) explaining what the meeting was about, its purpose, the overall tone, and the main themes discussed. Include who was present if identifiable.
+
+## Key Topics Discussed
+List every distinct topic that was discussed during the meeting. For each topic, write 2-4 sentences explaining what was said about it. Use bullet points. Be specific — reference actual points, numbers, or details mentioned.
+
+## Decisions Made
+List every decision that was reached during the meeting. Each decision should be a bullet point with the decision in **bold** followed by a brief explanation.
+
+## Action Items
+Extract every action item, task, or follow-up mentioned. Format as a checklist:
+- [ ] **Owner Name** — Task description (deadline if mentioned)
+
+## Open Questions
+List any questions that were raised but not resolved. If none, note "No open questions."
+
+## Participants
+List the participants who spoke (identifiable from the summaries). Note who seemed to be leading the meeting.
+
+## Sentiment & Engagement
+Brief assessment (2-3 sentences) of the meeting's energy and dynamics.
+
+Rules:
+- Be thorough — useful for someone who did NOT attend.
+- Use actual words and names. Do NOT invent information.
+- Merge duplicate topics across chunks. Order by importance, not by chunk order.
+- Keep it professional with proper Markdown.`;
+
+export async function summarizeChunk(
+	chunkText: string,
+	env: Pick<AppEnv, "OPENROUTER_API_KEY" | "OPENROUTER_MODEL" | "OPENROUTER_FREE_MODEL" | "OLLAMA_API_KEY" | "OLLAMA_BASE_URL" | "OLLAMA_MODEL">,
+): Promise<string | undefined> {
+	return callLLM(chunkText, CHUNK_SUMMARY_PROMPT, env);
+}
+
+export async function combineChunkSummaries(
+	combinedText: string,
+	env: Pick<AppEnv, "OPENROUTER_API_KEY" | "OPENROUTER_MODEL" | "OPENROUTER_FREE_MODEL" | "OLLAMA_API_KEY" | "OLLAMA_BASE_URL" | "OLLAMA_MODEL">,
+	customPrompt?: string,
+): Promise<string | undefined> {
+	const prompt = customPrompt && customPrompt.trim().length > 0 ? customPrompt.trim() : COMBINE_PROMPT;
+	return callLLM(combinedText, prompt, env);
+}
+
+async function callLLM(
+	userContent: string,
+	systemPrompt: string,
+	env: Pick<AppEnv, "OPENROUTER_API_KEY" | "OPENROUTER_MODEL" | "OPENROUTER_FREE_MODEL" | "OLLAMA_API_KEY" | "OLLAMA_BASE_URL" | "OLLAMA_MODEL">,
+): Promise<string | undefined> {
 	const openrouterModels = [
 		env.OPENROUTER_MODEL || "openrouter/free",
 		env.OPENROUTER_FREE_MODEL || "openrouter/free",
@@ -65,7 +132,7 @@ export async function generateSummary(
 							model,
 							messages: [
 								{ role: "system", content: systemPrompt },
-								{ role: "user", content: `Here is the meeting transcript:\n\n${transcriptText}` },
+								{ role: "user", content: userContent },
 							],
 						}),
 					});
@@ -102,7 +169,7 @@ export async function generateSummary(
 							stream: false,
 							messages: [
 								{ role: "system", content: systemPrompt },
-								{ role: "user", content: `Here is the meeting transcript:\n\n${transcriptText}` },
+								{ role: "user", content: userContent },
 							],
 						}),
 					});
