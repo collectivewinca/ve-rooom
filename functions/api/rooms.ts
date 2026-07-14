@@ -1,5 +1,5 @@
 import { verifyAuthToken } from "../auth";
-import { saveMeetingMeta, addUserMeeting } from "../lib/kv";
+import { saveMeetingMeta, addUserMeeting, addParticipant } from "../lib/kv";
 import { jsonResponse } from "../lib/response";
 import { checkRateLimit } from "../lib/rate-limit";
 import type { AppEnv } from "../lib/env";
@@ -115,6 +115,12 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 		createdBy: { email: user.email, name: user.name },
 		title,
 		createdAt: new Date().toISOString(),
+	});
+	// Add the host as a participant so they get summary emails
+	await addParticipant(env.MEETING_CACHE, meetingId, {
+		email: user.email,
+		name: user.name,
+		joinedAt: new Date().toISOString(),
 	});
 	await addUserMeeting(env.MEETING_CACHE, user.email, meetingId);
 
