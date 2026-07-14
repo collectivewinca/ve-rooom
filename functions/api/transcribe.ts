@@ -60,8 +60,18 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 	const body = await request.json() as { meetingId: string; audioUrl: string };
 	console.log("[transcribe.ts] POST — meetingId:", body.meetingId, "audioUrl:", body.audioUrl ? "found" : "none");
 
+	const partialKey = `meeting:${body.meetingId}:partial`;
+	let partial: PartialProgress | null = null;
+	try {
+		const rawPartial = await env.MEETING_CACHE.get(partialKey);
+		if (rawPartial) {
+			partial = JSON.parse(rawPartial) as PartialProgress;
+			console.log("[transcribe.ts] Resuming from chunk", partial.chunkIndex + 1, "/", partial.totalChunks);
+		}
+	} catch { }
+
 	const existing = await getCachedResult(env.MEETING_CACHE, body.meetingId);
-	if (existing && existing.transcript) {
+	if (existing && existing.transcript && !partial) {
 		console.log("[transcribe.ts] Cached transcript found — returning, summary:", existing.summary?.length || 0, "chars");
 		return jsonResponse(200, {
 			status: existing.summary ? "ok" : "transcribed",
@@ -76,16 +86,6 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 
 	const authHeaders = { Authorization: `Bearer ${env.CF_API_TOKEN}` };
 	const startTime = Date.now();
-
-	const partialKey = `meeting:${body.meetingId}:partial`;
-	let partial: PartialProgress | null = null;
-	try {
-		const rawPartial = await env.MEETING_CACHE.get(partialKey);
-		if (rawPartial) {
-			partial = JSON.parse(rawPartial) as PartialProgress;
-			console.log("[transcribe.ts] Resuming from chunk", partial.chunkIndex + 1, "/", partial.totalChunks);
-		}
-	} catch { }
 
 	let transcriptText = "";
 
@@ -126,21 +126,20 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 						totalChunks: numChunks,
 						totalSize,
 					};
-					try {
-						await env.MEETING_CACHE.put(partialKey, JSON.stringify(progress));
-					} catch { }
+				try {
+					await env.MEETING_CACHE.put(partialKey, JSON.stringify(progress));
+				} catch { }
 
-					if (chunkTranscripts.length > 0) {
-						const partialText = chunkTranscripts.join("\n\n");
-						await saveCachedResult(env.MEETING_CACHE, body.meetingId, { transcript: partialText, summary: "", cachedAt: new Date().toISOString() });
-						return jsonResponse(200, {
-							status: "processing",
-							message: `Transcribed ${i}/${numChunks} chunks so far. Continue polling for the rest.`,
-							transcript: partialText,
-							chunksDone: i,
-							totalChunks: numChunks,
-						});
-					}
+				if (chunkTranscripts.length > 0) {
+					const partialText = chunkTranscripts.join("\n\n");
+					return jsonResponse(200, {
+						status: "processing",
+						message: `Transcribed ${i}/${numChunks} chunks so far. Continue polling for the rest.`,
+						transcript: partialText,
+						chunksDone: i,
+						totalChunks: numChunks,
+					});
+				}
 					return jsonResponse(200, {
 						status: "processing",
 						message: `Processing chunk ${i + 1}/${numChunks}. Continue polling.`,
