@@ -94,18 +94,20 @@ export async function getParticipants(kv: KVNamespace, meetingId: string): Promi
 	}
 }
 
-export async function saveCachedResult(kv: KVNamespace, meetingId: string, result: CachedResult): Promise<void> {
+export async function saveCachedResult(kv: KVNamespace, meetingId: string, result: CachedResult, sessionId?: string): Promise<void> {
 	try {
-		await kv.put(`meeting:${meetingId}:result`, JSON.stringify(result));
-		console.log("[kv] Cached result for meeting", meetingId);
+		const key = sessionId ? `meeting:${meetingId}:session:${sessionId}:result` : `meeting:${meetingId}:result`;
+		await kv.put(key, JSON.stringify(result));
+		console.log("[kv] Cached result for meeting", meetingId, sessionId ? `session ${sessionId}` : "(meeting-level)");
 	} catch (e) {
 		console.log("[kv] Save result error:", e);
 	}
 }
 
-export async function getCachedResult(kv: KVNamespace, meetingId: string): Promise<CachedResult | null> {
+export async function getCachedResult(kv: KVNamespace, meetingId: string, sessionId?: string): Promise<CachedResult | null> {
 	try {
-		const raw = await kv.get(`meeting:${meetingId}:result`);
+		const key = sessionId ? `meeting:${meetingId}:session:${sessionId}:result` : `meeting:${meetingId}:result`;
+		const raw = await kv.get(key);
 		if (!raw) return null;
 		return JSON.parse(raw) as CachedResult;
 	} catch {
@@ -173,23 +175,24 @@ export async function saveMeetingPrompt(kv: KVNamespace, meetingId: string, prom
 	}
 }
 
-export async function addSummaryVersion(kv: KVNamespace, meetingId: string, version: SummaryVersion): Promise<void> {
+export async function addSummaryVersion(kv: KVNamespace, meetingId: string, version: SummaryVersion, sessionId?: string): Promise<void> {
 	try {
-		const key = `meeting:${meetingId}:history`;
+		const key = sessionId ? `meeting:${meetingId}:session:${sessionId}:history` : `meeting:${meetingId}:history`;
 		const raw = await kv.get(key);
 		const list: SummaryVersion[] = raw ? JSON.parse(raw) : [];
 		list.push(version);
 		if (list.length > 50) list.shift();
 		await kv.put(key, JSON.stringify(list));
-		console.log("[kv] Added summary version for", meetingId, "— total:", list.length);
+		console.log("[kv] Added summary version for", meetingId, sessionId ? `session ${sessionId}` : "(meeting-level)", "— total:", list.length);
 	} catch (e) {
 		console.log("[kv] Add summary version error:", e);
 	}
 }
 
-export async function getSummaryHistory(kv: KVNamespace, meetingId: string): Promise<SummaryVersion[]> {
+export async function getSummaryHistory(kv: KVNamespace, meetingId: string, sessionId?: string): Promise<SummaryVersion[]> {
 	try {
-		const raw = await kv.get(`meeting:${meetingId}:history`);
+		const key = sessionId ? `meeting:${meetingId}:session:${sessionId}:history` : `meeting:${meetingId}:history`;
+		const raw = await kv.get(key);
 		if (!raw) return [];
 		return JSON.parse(raw) as SummaryVersion[];
 	} catch {

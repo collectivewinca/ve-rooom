@@ -177,9 +177,10 @@ export async function joinRoom(roomId: string, name: string): Promise<JoinRoomRe
 	return data;
 }
 
-export async function getSummary(roomId: string): Promise<SummaryResponse> {
-	console.log("[api.ts] getSummary — roomId:", roomId);
-	const res = await fetch(`/api/summary/${roomId}`);
+export async function getSummary(roomId: string, sessionId?: string): Promise<SummaryResponse> {
+	console.log("[api.ts] getSummary — roomId:", roomId, "sessionId:", sessionId || "(latest)");
+	const url = sessionId ? `/api/summary/${roomId}?sessionId=${encodeURIComponent(sessionId)}` : `/api/summary/${roomId}`;
+	const res = await fetch(url);
 	console.log("[api.ts] getSummary response status:", res.status);
 	if (!res.ok) {
 		const errText = await res.text();

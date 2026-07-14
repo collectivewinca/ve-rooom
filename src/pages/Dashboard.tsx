@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
-import { fetchMeetings, type MeetingWithSessions, type MeetingSession } from "../lib/api";
+import { Link, useNavigate } from "react-router-dom";
+import { fetchMeetings, joinRoom, type MeetingWithSessions, type MeetingSession } from "../lib/api";
+import { useAuth } from "../lib/useAuth";
 
 function formatDate(dateStr?: string): string {
 	if (!dateStr) return "—";
@@ -51,6 +52,10 @@ export default function Dashboard() {
 	const [error, setError] = useState("");
 	const [expanded, setExpanded] = useState<Set<string>>(new Set());
 	const [searchQuery, setSearchQuery] = useState("");
+	const [joiningId, setJoiningId] = useState<string | null>(null);
+	const [joinError, setJoinError] = useState<string>("");
+	const { user } = useAuth();
+	const navigate = useNavigate();
 
 	console.log("[Dashboard] Render — loading:", loading, "meetings:", meetings.length);
 
@@ -75,6 +80,23 @@ export default function Dashboard() {
 			else next.add(id);
 			return next;
 		});
+	};
+
+	const handleJoinAgain = async (meetingId: string) => {
+		if (joiningId) return;
+		const name = user?.name || user?.email || "Participant";
+		setJoiningId(meetingId);
+		setJoinError("");
+		try {
+			const { authToken } = await joinRoom(meetingId, name);
+			sessionStorage.setItem(`rtk_token_${meetingId}`, authToken);
+			navigate(`/meeting/${meetingId}`);
+		} catch (e) {
+			console.log("[Dashboard] joinAgain error:", e);
+			setJoinError(e instanceof Error ? e.message : "Failed to join meeting");
+		} finally {
+			setJoiningId(null);
+		}
 	};
 
 	const filteredMeetings = searchQuery.trim()
@@ -148,6 +170,10 @@ export default function Dashboard() {
 
 			{error && <div className="error">{error}</div>}
 
+			{joinError && (
+				<div className="error join-error-toast">{joinError}</div>
+			)}
+
 			{!loading && meetings.length === 0 && !error && (
 				<div className="empty-state">
 					<img src="/favicon.svg" alt="VE Rooom" className="empty-state-icon" />
@@ -172,8 +198,10 @@ export default function Dashboard() {
 				const isExpanded = expanded.has(m.id);
 					const sessionCount = m.sessions.length;
 					const recordingCount = m.sessions.reduce((s, sess) => s + sess.recordings.length, 0);
-					const hasEndedSession = m.sessions.some((s) => s.status === "ENDED");
+					const endedSessions = m.sessions.filter((s) => s.status === "ENDED");
+					const hasEndedSession = endedSessions.length > 0;
 					const isLive = m.sessions.some((s) => s.status !== "ENDED" && s.status !== "INIT");
+					const latestEndedSessionId = endedSessions[0]?.id;
 
 					return (
 						<div key={m.id} className={`meeting-card ${isExpanded ? "expanded" : ""}`}>
@@ -216,16 +244,22 @@ export default function Dashboard() {
 									</div>
 								</div>
 									<div className="meeting-card-actions">
-										{hasEndedSession && (
-											<Link to={`/summary/${m.id}`} className="btn-link" onClick={(e) => e.stopPropagation()}>
+										{hasEndedSession && latestEndedSessionId && (
+											<Link
+												to={`/summary/${m.id}?sessionId=${latestEndedSessionId}`}
+												className="btn-link"
+												onClick={(e) => e.stopPropagation()}
+											>
 												View Summary
 											</Link>
 										)}
-										{isLive && (
-											<Link to={`/meeting/${m.id}`} className="btn-link btn-join" onClick={(e) => e.stopPropagation()}>
-												Join
-											</Link>
-										)}
+										<button
+											className={`btn-link ${isLive ? "btn-join" : "btn-rejoin"}`}
+											onClick={(e) => { e.stopPropagation(); handleJoinAgain(m.id); }}
+											disabled={joiningId === m.id}
+										>
+											{joiningId === m.id ? "Joining…" : isLive ? "Join" : "Join Again"}
+										</button>
 										<button className="expand-toggle" aria-label={isExpanded ? "Collapse" : "Expand"} onClick={(e) => { e.stopPropagation(); toggleExpand(m.id); }}>
 											<svg width="16" height="16" viewBox="0 0 16 16" fill="none"
 												style={{ transform: isExpanded ? "rotate(180deg)" : "none", transition: "transform 0.2s" }}>
@@ -334,7 +368,7 @@ function SessionRow({ session, meetingId }: { session: MeetingSession; meetingId
 
 			{session.status === "ENDED" && (
 				<div className="session-row-action">
-					<Link to={`/summary/${meetingId}`} className="btn-link btn-small">
+					<Link to={`/summary/${meetingId}?sessionId=${session.id}`} className="btn-link btn-small">
 						Summary →
 					</Link>
 				</div>

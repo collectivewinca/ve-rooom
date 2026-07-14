@@ -48,6 +48,7 @@ export default function Summary() {
 	const navigate = useNavigate();
 	const [searchParams] = useSearchParams();
 	const showDebug = searchParams.get("debug") === "true";
+	const sessionId = searchParams.get("sessionId") || undefined;
 	const [data, setData] = useState<SummaryResponse | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState("");
@@ -166,7 +167,7 @@ export default function Summary() {
 		const currentPoll = pollRef.current;
 		setPollCount(currentPoll);
 		try {
-			const res = await getSummary(roomId!);
+			const res = await getSummary(roomId!, sessionId);
 			setData(res);
 
 			if (res.status === "processing") {
@@ -214,13 +215,22 @@ export default function Summary() {
 			setLoading(false);
 		}
 	// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [roomId]);
+	}, [roomId, sessionId]);
 
 	useEffect(() => {
 		if (!roomId) return;
+		setData(null);
+		setLoading(true);
+		setError("");
+		setPollTimedOut(false);
+		setTranscribing(false);
+		setTranscribeStatus("");
+		setVersionIndex(-1);
+		pollRef.current = 0;
+		transcribingRef.current = false;
 		poll();
 	// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [roomId]);
+	}, [roomId, sessionId]);
 
 	useEffect(() => {
 		if (!roomId) return;

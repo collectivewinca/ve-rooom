@@ -42,9 +42,10 @@ async function buildMeetingContext(env: Env, meetingId: string): Promise<string>
 
 export const onRequestGet: PagesFunction<Env> = async ({ params, request, env, waitUntil }) => {
 	const rl = await checkRateLimit(env.MEETING_CACHE, request);
-	if (!rl.allowed) return jsonResponse(429, { error: "Too many requests. Please slow down." });
+	if (!rl.allowed) return jsonResponse(429, { status: "error", error: "Too many requests. Please slow down." });
 
 	const meetingId = params.id as string;
+	const requestedSessionId = new URL(request.url).searchParams.get("sessionId");
 
 	if (!env.CF_ACCOUNT_ID || !env.CF_API_TOKEN || !env.RTK_APP_ID) {
 		return jsonResponse(500, { status: "error", error: "Server missing Cloudflare configuration" });
@@ -69,19 +70,31 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env, w
 		data?: { sessions?: { id: string; associated_id: string; status: string; ended_at?: string; recording_status?: string; total_participants?: number; recording_minutes_consumed?: number; transcription_minutes_consumed?: number }[] };
 	};
 	const allSessions = sessionsJson.data?.sessions || [];
-	const endedSessions = allSessions.filter((s) => s.associated_id === meetingId && s.status === "ENDED");
-	endedSessions.sort((a, b) => (b.ended_at || "").localeCompare(a.ended_at || ""));
-	const session = endedSessions[0];
+	const meetingSessions = allSessions.filter((s) => s.associated_id === meetingId);
 
-	console.log("[summary.ts] Ended sessions:", endedSessions.length, "Latest:", session?.id, "ended_at:", session?.ended_at);
+	let session: { id: string; associated_id: string; status: string; ended_at?: string; recording_status?: string; total_participants?: number; recording_minutes_consumed?: number; transcription_minutes_consumed?: number } | undefined;
+	if (requestedSessionId) {
+		session = meetingSessions.find((s) => s.id === requestedSessionId && s.status === "ENDED");
+		console.log("[summary.ts] Requested sessionId:", requestedSessionId, "found:", !!session);
+	}
+	if (!session) {
+		const endedSessions = meetingSessions.filter((s) => s.status === "ENDED");
+		endedSessions.sort((a, b) => (b.ended_at || "").localeCompare(a.ended_at || ""));
+		session = endedSessions[0];
+		console.log("[summary.ts] Falling back to latest ended session:", session?.id);
+	}
+
+	console.log("[summary.ts] Ended sessions for meeting:", meetingSessions.filter((s) => s.status === "ENDED").length, "Using:", session?.id, "ended_at:", session?.ended_at);
 
 	if (!session) {
 		return jsonResponse(200, { status: "no_ended_session" });
 	}
 
-	const cached = await getCachedResult(env.MEETING_CACHE, meetingId);
+	const activeSessionId = session.id;
+
+	const cached = await getCachedResult(env.MEETING_CACHE, meetingId, activeSessionId);
 	const r2Refs = await getRecordingRefs(env.MEETING_CACHE, meetingId);
-	let history = await getSummaryHistory(env.MEETING_CACHE, meetingId);
+	let history = await getSummaryHistory(env.MEETING_CACHE, meetingId, activeSessionId);
 	const hasR2 = r2Refs.length > 0;
 	const customPrompt = await resolvePrompt(env, meetingId);
 	if (customPrompt) console.log("[summary.ts] Using custom prompt for", meetingId, `(${customPrompt.length} chars)`);
@@ -90,11 +103,11 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env, w
 	// Seed history with existing cached summary if history is empty
 	if (history.length === 0 && cached?.summary) {
 		const seeded: SummaryVersion = { summary: cached.summary, prompt: customPrompt || undefined, createdAt: cached.cachedAt || new Date().toISOString() };
-		await addSummaryVersion(env.MEETING_CACHE, meetingId, seeded);
+		await addSummaryVersion(env.MEETING_CACHE, meetingId, seeded, activeSessionId);
 		history = [seeded];
-		console.log("[summary.ts] Seeded history from cached summary for", meetingId);
+		console.log("[summary.ts] Seeded history from cached summary for", meetingId, "session", activeSessionId);
 	}
-	if (history.length > 0) console.log("[summary.ts] Summary history:", history.length, "versions");
+	if (history.length > 0) console.log("[summary.ts] Summary history:", history.length, "versions for session", activeSessionId);
 
 	const r2RecordingUrl = r2Refs.find((r) => r.type === "composite")?.url;
 	const r2AudioUrl = r2Refs.find((r) => r.type === "audio")?.url;
@@ -109,7 +122,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env, w
 	async function fetchTranscriptUrl() {
 		try {
 			const res = await fetch(
-				`${RTK_BASE}/${env.CF_ACCOUNT_ID}/realtime/kit/${env.RTK_APP_ID}/sessions/${session.id}/transcript`,
+				`${RTK_BASE}/${env.CF_ACCOUNT_ID}/realtime/kit/${env.RTK_APP_ID}/sessions/${activeSessionId}/transcript`,
 				{ headers: authHeaders }
 			);
 			if (res.ok) {
@@ -125,7 +138,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env, w
 	// Cache hit: full summary + transcript
 	if (cached && cached.summary && cached.transcript) {
 		const [transcriptUrl, recRes] = await Promise.all([fetchTranscriptUrl(), fetchRecordings()]);
-		const parsed = await parseSessionRecordings(recRes, meetingId, session.id);
+		const parsed = await parseSessionRecordings(recRes, meetingId, activeSessionId);
 		const meta = await getMeetingMeta(env.MEETING_CACHE, meetingId);
 		const participants = await getParticipants(env.MEETING_CACHE, meetingId);
 
@@ -136,7 +149,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env, w
 			recordingUrl: parsed.recordingUrl || r2RecordingUrl,
 			audioRecordingUrl: parsed.audioRecordingUrl || r2AudioUrl,
 			r2Recordings: hasR2 ? r2Refs : undefined,
-			sessionId: session.id,
+			sessionId: activeSessionId,
 			transcript_text: cached.transcript,
 			cachedAt: cached.cachedAt,
 			meetingMeta: meta || undefined,
@@ -149,7 +162,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env, w
 	// Cache hit: transcript only (no summary yet) — generate summary server-side
 	if (cached && cached.transcript && !cached.summary) {
 		const recRes = await fetchRecordings();
-		const parsed = await parseSessionRecordings(recRes, meetingId, session.id);
+		const parsed = await parseSessionRecordings(recRes, meetingId, activeSessionId);
 
 		const transcriptLen = cached.transcript.length;
 		let summary: string | undefined;
@@ -164,7 +177,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env, w
 				recordingUrl: parsed.recordingUrl || r2RecordingUrl,
 				audioRecordingUrl: parsed.audioRecordingUrl || r2AudioUrl,
 				r2Recordings: hasR2 ? r2Refs : undefined,
-				sessionId: session.id,
+				sessionId: activeSessionId,
 				transcript_text: cached.transcript,
 				prompt: customPrompt,
 				history: updatedHistory.length > 0 ? updatedHistory : undefined,
@@ -173,9 +186,9 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env, w
 
 		summary = await generateSummary(await buildMeetingContext(env, meetingId) + cached.transcript, env, customPrompt);
 		if (summary) {
-			await saveCachedResult(env.MEETING_CACHE, meetingId, { transcript: cached.transcript, summary, cachedAt: cached.cachedAt });
+			await saveCachedResult(env.MEETING_CACHE, meetingId, { transcript: cached.transcript, summary, cachedAt: cached.cachedAt }, activeSessionId);
 			const newVersion: SummaryVersion = { summary, prompt: customPrompt, createdAt: new Date().toISOString() };
-			await addSummaryVersion(env.MEETING_CACHE, meetingId, newVersion);
+			await addSummaryVersion(env.MEETING_CACHE, meetingId, newVersion, activeSessionId);
 			updatedHistory = [...history, newVersion];
 			if (env.SMTP_API_URL) {
 				waitUntil(sendAutoEmails(env, meetingId, summary, request.url, session, parsed));
@@ -188,7 +201,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env, w
 			recordingUrl: parsed.recordingUrl || r2RecordingUrl,
 			audioRecordingUrl: parsed.audioRecordingUrl || r2AudioUrl,
 			r2Recordings: hasR2 ? r2Refs : undefined,
-			sessionId: session.id,
+			sessionId: activeSessionId,
 			transcript_text: cached.transcript,
 			prompt: customPrompt,
 			history: updatedHistory.length > 0 ? updatedHistory : undefined,
@@ -197,7 +210,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env, w
 
 	// No cache: fetch RTK transcript URL + recordings
 	const [transcriptUrl, recRes] = await Promise.all([fetchTranscriptUrl(), fetchRecordings()]);
-	const parsed = await parseSessionRecordings(recRes, meetingId, session.id);
+	const parsed = await parseSessionRecordings(recRes, meetingId, activeSessionId);
 
 	let transcriptText = "";
 	if (transcriptUrl) {
@@ -212,11 +225,11 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env, w
 	const transcriptLines = transcriptText.trim().split("\n").filter((l) => l.trim());
 	if (transcriptLines.length > 0) {
 		const summary = await generateSummary(await buildMeetingContext(env, meetingId) + transcriptText, env, customPrompt);
-		await saveCachedResult(env.MEETING_CACHE, meetingId, { transcript: transcriptText, summary: summary || "", cachedAt: new Date().toISOString() });
+		await saveCachedResult(env.MEETING_CACHE, meetingId, { transcript: transcriptText, summary: summary || "", cachedAt: new Date().toISOString() }, activeSessionId);
 		let updatedHistory = history;
 		if (summary) {
 			const newVersion: SummaryVersion = { summary, prompt: customPrompt, createdAt: new Date().toISOString() };
-			await addSummaryVersion(env.MEETING_CACHE, meetingId, newVersion);
+			await addSummaryVersion(env.MEETING_CACHE, meetingId, newVersion, activeSessionId);
 			updatedHistory = [...history, newVersion];
 			if (env.SMTP_API_URL) {
 				waitUntil(sendAutoEmails(env, meetingId, summary, request.url, session, parsed, transcriptUrl));
@@ -229,7 +242,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env, w
 			recordingUrl: parsed.recordingUrl || r2RecordingUrl,
 			audioRecordingUrl: parsed.audioRecordingUrl || r2AudioUrl,
 			r2Recordings: hasR2 ? r2Refs : undefined,
-			sessionId: session.id,
+			sessionId: activeSessionId,
 			transcript_text: transcriptText,
 			prompt: customPrompt,
 			history: updatedHistory.length > 0 ? updatedHistory : undefined,
@@ -250,7 +263,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env, w
 		recordingUrl: parsed.recordingUrl || r2RecordingUrl,
 		audioRecordingUrl: parsed.audioRecordingUrl || r2AudioUrl,
 		r2Recordings: hasR2 ? r2Refs : undefined,
-		sessionId: session.id,
+		sessionId: activeSessionId,
 		transcript_text: transcriptText,
 		prompt: customPrompt,
 		history: history.length > 0 ? history : undefined,

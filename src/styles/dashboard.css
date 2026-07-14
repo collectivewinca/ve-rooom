@@ -153,6 +153,32 @@
 	border-color: rgba(34, 197, 94, 0.2);
 }
 
+.meeting-card-actions .btn-join:hover:not(:disabled) {
+	background: rgba(34, 197, 94, 0.2);
+	border-color: rgba(34, 197, 94, 0.35);
+}
+
+.meeting-card-actions .btn-rejoin {
+	background: rgba(251, 191, 36, 0.1);
+	color: var(--color-primary-light);
+	border-color: rgba(251, 191, 36, 0.2);
+}
+
+.meeting-card-actions .btn-rejoin:hover:not(:disabled) {
+	background: rgba(251, 191, 36, 0.18);
+	border-color: rgba(251, 191, 36, 0.35);
+}
+
+.meeting-card-actions .btn-link:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.join-error-toast {
+	margin-bottom: 1rem;
+	font-size: 0.8125rem;
+}
+
 .expand-toggle {
 	display: flex;
 	align-items: center;
