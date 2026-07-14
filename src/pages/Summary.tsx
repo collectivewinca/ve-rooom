@@ -160,28 +160,22 @@ export default function Summary() {
 		}
 	}, [roomId, sendingEmail]);
 
-	useEffect(() => {
+	const poll = useCallback(async () => {
 		if (!roomId) return;
-		let cancelled = false;
-		let timerId: ReturnType<typeof setTimeout> | undefined;
-		const MAX_POLLS = 60;
+		pollRef.current += 1;
+		const currentPoll = pollRef.current;
+		setPollCount(currentPoll);
+		try {
+			const res = await getSummary(roomId!);
+			setData(res);
 
-		async function poll() {
-			pollRef.current += 1;
-			const currentPoll = pollRef.current;
-			setPollCount(currentPoll);
-			try {
-				const res = await getSummary(roomId!);
-				if (cancelled) return;
-				setData(res);
-
-				if (res.status === "processing") {
-					if (currentPoll >= MAX_POLLS) {
-						setPollTimedOut(true);
-						setLoading(false);
-						return;
-					}
-					timerId = setTimeout(poll, 5000);
+			if (res.status === "processing") {
+				if (currentPoll >= 60) {
+					setPollTimedOut(true);
+					setLoading(false);
+					return;
+				}
+				setTimeout(poll, 5000);
 			} else if (res.status === "needs_transcription") {
 				setLoading(false);
 				if (!transcribingRef.current && res.audioRecordingUrl) {
@@ -193,40 +187,38 @@ export default function Summary() {
 					triggerTranscription(res);
 				}
 			} else if (res.status === "no_ended_session") {
-					setLoading(true);
-					if (currentPoll >= MAX_POLLS) {
-						setPollTimedOut(true);
-						setLoading(false);
-						return;
-					}
-					timerId = setTimeout(poll, 5000);
-				} else {
+				setLoading(true);
+				if (currentPoll >= 60) {
+					setPollTimedOut(true);
 					setLoading(false);
-					if (!res.recordingUrl && !res.audioRecordingUrl) {
-						scanR2Recordings(roomId!).then((refs) => {
-							if (refs.length > 0 && !cancelled) {
-								setData((prev) => prev ? {
-									...prev,
-									recordingUrl: prev.recordingUrl || refs.find((r) => r.type === "composite")?.url,
-									audioRecordingUrl: prev.audioRecordingUrl || refs.find((r) => r.type === "audio")?.url,
-									r2Recordings: refs,
-								} : prev);
-							}
-						}).catch(() => {});
-					}
+					return;
 				}
-			} catch (e) {
-				if (cancelled) return;
-				setError(e instanceof Error ? e.message : "Failed to load summary");
+				setTimeout(poll, 5000);
+			} else {
 				setLoading(false);
+				if (!res.recordingUrl && !res.audioRecordingUrl) {
+					scanR2Recordings(roomId!).then((refs) => {
+						if (refs.length > 0) {
+							setData((prev) => prev ? {
+								...prev,
+								recordingUrl: prev.recordingUrl || refs.find((r) => r.type === "composite")?.url,
+								audioRecordingUrl: prev.audioRecordingUrl || refs.find((r) => r.type === "audio")?.url,
+								r2Recordings: refs,
+							} : prev);
+						}
+					}).catch(() => {});
+				}
 			}
+		} catch (e) {
+			setError(e instanceof Error ? e.message : "Failed to load summary");
+			setLoading(false);
 		}
+	// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [roomId]);
 
+	useEffect(() => {
+		if (!roomId) return;
 		poll();
-		return () => {
-			cancelled = true;
-			if (timerId) clearTimeout(timerId);
-		};
 	// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [roomId]);
 
@@ -272,8 +264,14 @@ export default function Summary() {
 					setTranscribeStatus("Summary generated!");
 					setData({ ...summaryData, status: "ok", summary: summaryResult.summary });
 				} else {
-					setTranscribeStatus("Summary generation failed. Transcript is available below.");
-					setData({ ...summaryData, status: "ok", summary: "## Meeting Summary\n\nAI summary generation failed, but the transcript is available below.\n\nDownload the full transcript to read the meeting content." });
+					// Summary generation failed — the webhook may still be processing.
+					// Re-poll the API to pick up the webhook's summary instead of giving up.
+					setTranscribeStatus("Summary still processing on server. Waiting for webhook...");
+					setData({ ...summaryData, status: "processing" });
+					setLoading(true);
+					pollRef.current = 0;
+					poll();
+					return;
 				}
 			} catch (e) {
 				setTranscribeStatus("Summary generation failed: " + (e instanceof Error ? e.message : String(e)));
@@ -305,13 +303,14 @@ export default function Summary() {
 						transcript_text: result.transcript,
 					});
 				} else {
-					setTranscribeStatus("Transcript ready but summary generation failed. You can read the transcript below.");
-					setData({
-						...summaryData,
-						status: "ok",
-						summary: "## Meeting Summary\n\nAI summary generation failed, but the transcript is available below.\n\nDownload the full transcript to read the meeting content.",
-						transcript_text: result.transcript,
-					});
+					// Summary generation failed — the webhook may still be processing.
+					// Re-poll the API to pick up the webhook's summary instead of giving up.
+					setTranscribeStatus("Transcript ready. Summary still processing on server. Waiting for webhook...");
+					setData({ ...summaryData, status: "processing", transcript_text: result.transcript });
+					setLoading(true);
+					pollRef.current = 0;
+					poll();
+					return;
 				}
 			} else if (result.status === "processing") {
 				setTranscribeStatus(`Processing audio... ${result.chunksDone || 0}/${result.totalChunks || "?"} chunks done. Retrying...`);
