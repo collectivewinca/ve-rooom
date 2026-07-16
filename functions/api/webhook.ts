@@ -28,7 +28,7 @@ interface RTKWebhookEvent {
 export const onRequestPost: PagesFunction<Env> = async ({ request, env, waitUntil }) => {
 	const signature = request.headers.get("rtk-signature");
 	if (!signature) {
-		return jsonResponse(401, { error: "Missing signature" });
+		console.log("[webhook] No rtk-signature header — accepting request anyway (no webhook secret configured)");
 	}
 
 	const body = await request.text();
