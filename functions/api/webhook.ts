@@ -2,7 +2,7 @@ import { getCachedResult, getMeetingMeta, getParticipants, saveCachedResult, add
 import { jsonResponse } from "../lib/response";
 import { generateSummary } from "../lib/summarizer";
 import { sendSummaryEmails } from "../lib/summary-email";
-import { transcribeCompositeAudio, generateMeetingSummary, maybeSendAutoEmail, resolvePrompt } from "../lib/transcribe-core";
+import { transcribeCompositeAudio } from "../lib/transcribe-core";
 import type { AppEnv } from "../lib/env";
 
 type Env = AppEnv;
@@ -122,20 +122,11 @@ async function runTranscriptionPipeline(env: Env, meetingId: string, audioUrl: s
 			return;
 		}
 
-		// Step 2: Generate summary (has dedup guard — re-checks cache)
-		const transcript = tr.transcript;
-		const customPrompt = await resolvePrompt(env, meetingId);
-		const summaryResult = await generateMeetingSummary(env, meetingId, transcript, customPrompt, sessionId);
-		console.log("[webhook] Summary result:", summaryResult.status);
-
-		if (summaryResult.status !== "ok") {
-			console.log("[webhook] Summary failed:", summaryResult.message);
-			return;
-		}
-
-		// Step 3: Auto-email (has isEmailSent guard)
-		await maybeSendAutoEmail(env, meetingId, summaryResult.summary, origin);
-		console.log("[webhook] Pipeline complete for", meetingId, sessionId ? `session ${sessionId}` : "");
+		// Transcription done — but the waitUntil() budget is nearly exhausted
+		// after the Whisper call. Fire a self-continue fetch to /api/transcribe-continue
+		// which gets a fresh 30s request budget for summary generation + email.
+		console.log("[webhook] Transcription done — firing self-continue for summary + email");
+		await selfContinue(env, meetingId, audioUrl, origin, sessionId, owner);
 	} catch (e) {
 		console.log("[webhook] Pipeline error:", e instanceof Error ? e.message : String(e));
 	}
