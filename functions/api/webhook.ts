@@ -49,7 +49,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env, waitUnti
 		const sessionId = event.recording?.sessionId || event.meeting?.sessionId;
 		if (meetingId && audioUrl) {
 			const origin = new URL(request.url).origin;
-			waitUntil(runTranscriptionPipeline(env, meetingId, audioUrl, origin, sessionId, "webhook"));
+			waitUntil(runTranscriptionPipeline(env, meetingId, audioUrl, origin, sessionId, "webhook", waitUntil));
 			return jsonResponse(200, { ok: true, processing: true, event: event.event });
 		}
 	}
@@ -59,7 +59,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env, waitUnti
 		const meetingId = event.meeting.id;
 		const sessionId = event.meeting.sessionId;
 		const origin = new URL(request.url).origin;
-		waitUntil(findAudioAndProcess(env, meetingId, origin, sessionId));
+		waitUntil(findAudioAndProcess(env, meetingId, origin, sessionId, waitUntil));
 		return jsonResponse(200, { ok: true, processing: true, event: event.event });
 	}
 
@@ -89,7 +89,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env, waitUnti
  * self-continuing fetch() to /api/transcribe-continue so each chunk batch gets
  * a fresh 30s request budget instead of dying inside waitUntil().
  */
-async function runTranscriptionPipeline(env: Env, meetingId: string, audioUrl: string, origin: string, sessionId?: string, owner = "webhook"): Promise<void> {
+async function runTranscriptionPipeline(env: Env, meetingId: string, audioUrl: string, origin: string, sessionId?: string, owner = "webhook", waitUntil?: (p: Promise<unknown>) => void): Promise<void> {
 	try {
 		// Skip if already fully processed for this session
 		const cached = await getCachedResult(env.MEETING_CACHE, meetingId, sessionId);
@@ -108,7 +108,7 @@ async function runTranscriptionPipeline(env: Env, meetingId: string, audioUrl: s
 			// Ran out of time budget — fire self-continuing fetch to keep going.
 			// Each fetch to /api/transcribe-continue gets a fresh 30s request budget.
 			console.log("[webhook] Transcription partial — firing self-continue fetch");
-			await selfContinue(env, meetingId, audioUrl, origin, sessionId, owner);
+			fireSelfContinue(waitUntil, env, meetingId, audioUrl, origin, sessionId, owner);
 			return;
 		}
 
@@ -123,31 +123,30 @@ async function runTranscriptionPipeline(env: Env, meetingId: string, audioUrl: s
 		}
 
 		// Transcription done — but the waitUntil() budget is nearly exhausted
-		// after the Whisper call. Fire a self-continue fetch to /api/transcribe-continue
-		// which gets a fresh 30s request budget for summary generation + email.
+		// after the Whisper call. Fire a self-continue fetch as a SEPARATE waitUntil
+		// so it gets its own budget for summary generation + email.
 		console.log("[webhook] Transcription done — firing self-continue for summary + email");
-		await selfContinue(env, meetingId, audioUrl, origin, sessionId, owner);
+		fireSelfContinue(waitUntil, env, meetingId, audioUrl, origin, sessionId, owner);
 	} catch (e) {
 		console.log("[webhook] Pipeline error:", e instanceof Error ? e.message : String(e));
 	}
 }
 
-/**
- * Self-continuing fetch chain: fires fetch() to /api/transcribe-continue,
- * which runs one batch of chunks and then fires the next fetch itself.
- * Each fetch gets a fresh 30s request budget, so this works for any meeting length.
- */
-async function selfContinue(env: Env, meetingId: string, audioUrl: string, origin: string, sessionId: string | undefined, owner: string): Promise<void> {
-	try {
-		const url = new URL("/api/transcribe-continue", origin);
-		const res = await fetch(url.toString(), {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ meetingId, audioUrl, sessionId, owner }),
-		});
+function fireSelfContinue(waitUntil: ((p: Promise<unknown>) => void) | undefined, env: Env, meetingId: string, audioUrl: string, origin: string, sessionId: string | undefined, owner: string): void {
+	const url = new URL("/api/transcribe-continue", origin).toString();
+	const fetchPromise = fetch(url, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ meetingId, audioUrl, sessionId, owner }),
+	}).then((res) => {
 		console.log("[webhook] self-continue fetch status:", res.status);
-	} catch (e) {
+	}).catch((e) => {
 		console.log("[webhook] self-continue error:", e instanceof Error ? e.message : String(e));
+	});
+
+	if (waitUntil) {
+		// Schedule as a separate waitUntil — gets its own execution budget
+		waitUntil(fetchPromise);
 	}
 }
 
@@ -155,7 +154,7 @@ async function selfContinue(env: Env, meetingId: string, audioUrl: string, origi
  * Fallback: meeting.ended fires but recording.statusUpdate didn't.
  * Fetch the recording audio URL from the RTK API and run the pipeline.
  */
-async function findAudioAndProcess(env: Env, meetingId: string, origin: string, sessionId?: string): Promise<void> {
+async function findAudioAndProcess(env: Env, meetingId: string, origin: string, sessionId?: string, waitUntil?: (p: Promise<unknown>) => void): Promise<void> {
 	try {
 		// Skip if already processed for this session
 		const cached = await getCachedResult(env.MEETING_CACHE, meetingId, sessionId);
@@ -190,20 +189,20 @@ async function findAudioAndProcess(env: Env, meetingId: string, origin: string, 
 		const recJson = await recRes.json() as { success: boolean; data?: { audio_download_url?: string; download_url?: string; status?: string; output_file_name?: string; session_id?: string }[] };
 		const recordings = recJson.data || [];
 
-		// Find the composite recording with an audio URL — prefer session-specific, fallback to any
+		// Find the composite recording with an audio URL for THIS session only
 		let composite = recordings.find((r) => r.audio_download_url && r.status === "UPLOADED" && !r.output_file_name?.endsWith(".webm") && sessionId && r.session_id === sessionId);
-		if (!composite) {
+		if (!composite && !sessionId) {
 			composite = recordings.find((r) => r.audio_download_url && r.status === "UPLOADED" && !r.output_file_name?.endsWith(".webm"));
 		}
 		const audioUrl = composite?.audio_download_url;
 
 		if (!audioUrl) {
-			console.log("[webhook] meeting.ended — no uploaded composite audio found for", meetingId, sessionId ? `session ${sessionId}` : "");
+			console.log("[webhook] meeting.ended — no uploaded composite audio found for", meetingId, sessionId ? `session ${sessionId}` : "", "— recording may still be processing");
 			return;
 		}
 
 		console.log("[webhook] meeting.ended — found audio, running pipeline for", meetingId, sessionId ? `session ${sessionId}` : "");
-		await runTranscriptionPipeline(env, meetingId, audioUrl, origin, sessionId, "webhook-ended");
+		await runTranscriptionPipeline(env, meetingId, audioUrl, origin, sessionId, "webhook-ended", waitUntil);
 	} catch (e) {
 		console.log("[webhook] findAudioAndProcess error:", e instanceof Error ? e.message : String(e));
 	}
