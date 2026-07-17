@@ -6,7 +6,7 @@ import {
 	useRealtimeKitMeeting,
 } from "@cloudflare/realtimekit-react";
 import { RtkMeeting } from "@cloudflare/realtimekit-react-ui";
-import { stopAllRecordings, getLatestEndedSessionId, startCompositeRecording } from "../lib/api";
+import { stopAllRecordings, getLatestEndedSessionId } from "../lib/api";
 
 export default function Meeting() {
 	const { roomId } = useParams<{ roomId: string }>();
@@ -97,16 +97,6 @@ function MeetingView({ roomId }: { roomId: string }) {
 		const m = meetingRef.current;
 		if (!m) return;
 
-		const startRecording = async () => {
-			console.log("[MeetingView] roomJoined — starting composite recording for meeting:", roomId);
-			try {
-				const res = await startCompositeRecording(roomId);
-				console.log("[MeetingView] startCompositeRecording result:", res);
-			} catch (e) {
-				console.log("[MeetingView] startCompositeRecording failed:", e);
-			}
-		};
-
 		const stopRecordings = async () => {
 			if (stopRequested.current) return;
 			stopRequested.current = true;
@@ -137,13 +127,11 @@ function MeetingView({ roomId }: { roomId: string }) {
 			off(event: "roomLeft", handler: (payload: { state: string }) => void): void;
 		};
 
-		console.log("[MeetingView] Attaching roomJoined + roomLeft listeners");
-		self.on("roomJoined", startRecording);
+		console.log("[MeetingView] Attaching roomLeft listener");
 		self.on("roomLeft", stopRecordings);
 
 		return () => {
-			console.log("[MeetingView] Cleaning up roomJoined + roomLeft listeners");
-			self.off("roomJoined", startRecording);
+			console.log("[MeetingView] Cleaning up roomLeft listener");
 			self.off("roomLeft", stopRecordings);
 		};
 	}, [roomId]);

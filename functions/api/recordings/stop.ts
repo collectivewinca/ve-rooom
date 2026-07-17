@@ -56,7 +56,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 		data?: { id: string; status: string; type?: string }[];
 	};
 	const recordings = existingJson.data || [];
-	const active = recordings.filter((r) => r.status === "INVOKED" || r.status === "RECORDING");
+	const active = recordings.filter((r) => r.status === "RECORDING");
 	console.log("[recordings/stop.ts] Active recordings to stop:", active.length);
 
 	const stopped: { id: string; status: string }[] = [];
@@ -67,7 +67,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 		try {
 			const stopRes = await fetch(
 				`${RTK_BASE}/${env.CF_ACCOUNT_ID}/realtime/kit/${env.RTK_APP_ID}/recordings/${rec.id}`,
-				{ method: "PATCH", headers: authHeaders, body: JSON.stringify({ status: "STOP" }) }
+				{ method: "PUT", headers: authHeaders, body: JSON.stringify({ action: "stop" }) }
 			);
 			if (stopRes.ok) {
 				console.log("[recordings/stop.ts] Stopped:", rec.id);

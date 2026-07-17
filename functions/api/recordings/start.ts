@@ -52,10 +52,10 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 		};
 		const recordings = existingJson.data || [];
 		const activeComposite = recordings.find(
-			(r) => r.status === "RECORDING" && r.type !== "TRACK"
+			(r) => (r.status === "INVOKED" || r.status === "RECORDING") && r.type !== "TRACK"
 		);
 		if (activeComposite) {
-			console.log("[recordings/start.ts] Active RECORDING composite recording already exists — skipping");
+			console.log("[recordings/start.ts] Active composite recording already exists — skipping");
 			return jsonResponse(200, { alreadyStarted: true, status: activeComposite.status });
 		}
 		console.log("[recordings/start.ts] No active composite recording found — starting new one");
