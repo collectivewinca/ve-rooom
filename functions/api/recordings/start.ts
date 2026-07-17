@@ -52,10 +52,10 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 		};
 		const recordings = existingJson.data || [];
 		const activeComposite = recordings.find(
-			(r) => (r.status === "INVOKED" || r.status === "RECORDING") && r.type !== "TRACK"
+			(r) => r.status === "RECORDING" && r.type !== "TRACK"
 		);
 		if (activeComposite) {
-			console.log("[recordings/start.ts] Active composite recording already exists — skipping");
+			console.log("[recordings/start.ts] Active RECORDING composite recording already exists — skipping");
 			return jsonResponse(200, { alreadyStarted: true, status: activeComposite.status });
 		}
 		console.log("[recordings/start.ts] No active composite recording found — starting new one");
@@ -74,6 +74,14 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 				allow_multiple_recordings: true,
 				realtimekit_bucket_config: { enabled: true },
 				audio_config: { codec: "MP3", export_file: true },
+				storage_config: {
+					type: "cloudflare",
+					access_key: "64f665d7a0fccb86a5cad82bedbddc9e",
+					secret: "525c6a46137217e5dce6784bf6f8504cc613ef70102aa3d8b02a0ffc9023157f",
+					bucket: "ve-room",
+					path: "/",
+					account_id: "aa6789c67f992fd0b9f5933e86e11184",
+				},
 			}),
 		}
 	);
