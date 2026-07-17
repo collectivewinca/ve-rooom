@@ -272,8 +272,9 @@ async function processTranscriptAndEmail(env: Env, meetingId: string, transcript
 					summary,
 					meetingId,
 					appUrl,
+					sessionId,
 				});
-				console.log("[webhook] Emails sent for", meetingId);
+				console.log("[webhook] Emails sent for", meetingId, sessionId ? `session ${sessionId}` : "");
 			}
 		}
 	} catch (e) {
@@ -327,8 +328,9 @@ async function processRtkSummaryAndEmail(env: Env, meetingId: string, summaryUrl
 					summary: summaryText,
 					meetingId,
 					appUrl,
+					sessionId,
 				});
-				console.log("[webhook] Emails sent for RTK summary", meetingId);
+				console.log("[webhook] Emails sent for RTK summary", meetingId, sessionId ? `session ${sessionId}` : "");
 			}
 		}
 	} catch (e) {

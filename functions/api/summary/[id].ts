@@ -356,6 +356,7 @@ async function sendAutoEmails(
 				endedAt: sessionInfo.ended_at,
 				recordingUrl: recordingInfo.recordingUrl || undefined,
 				transcriptUrl: transcriptUrl || undefined,
+				sessionId,
 			});
 			if (result.sent > 0) {
 				await markEmailSent(env.MEETING_CACHE, meetingId, sessionId);

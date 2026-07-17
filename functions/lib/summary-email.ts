@@ -120,10 +120,13 @@ export async function sendSummaryEmails(
 		endedAt?: string;
 		recordingUrl?: string;
 		transcriptUrl?: string;
+		sessionId?: string;
 	},
 ): Promise<{ sent: number; failed: number }> {
 	const { participants, meetingTitle, creatorName, summary, meetingId, appUrl } = params;
-	const summaryUrl = `${appUrl}/summary/${meetingId}`;
+	const summaryUrl = params.sessionId
+		? `${appUrl}/summary/${meetingId}?sessionId=${encodeURIComponent(params.sessionId)}`
+		: `${appUrl}/summary/${meetingId}`;
 	const dashboardUrl = `${appUrl}/dashboard`;
 
 	// Deduplicate by email

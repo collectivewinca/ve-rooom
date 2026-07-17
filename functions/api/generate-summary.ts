@@ -203,6 +203,7 @@ async function finishSummary(env: Env, body: { transcript: string; meetingId?: s
 					appUrl: url.origin,
 					alwaysEmail: env.ALWAYS_EMAIL,
 					meetingDate: meta.createdAt,
+					sessionId,
 				}).then(() => markEmailSent(env.MEETING_CACHE, body.meetingId!, sessionId)));
 			}
 		}

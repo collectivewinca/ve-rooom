@@ -148,7 +148,7 @@ export default function Summary() {
 		setSendingEmail(true);
 		setEmailStatus("Sending email with latest summary...");
 		try {
-			const result = await sendSummaryEmail(roomId);
+			const result = await sendSummaryEmail(roomId, sessionId);
 			if (result.status === "ok" && result.sent) {
 				setEmailStatus(`Email sent to ${result.sent} recipient(s).`);
 			} else {

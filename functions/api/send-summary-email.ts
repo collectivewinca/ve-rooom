@@ -12,15 +12,16 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 	const rl = await checkRateLimit(env.MEETING_CACHE, request);
 	if (!rl.allowed) return jsonResponse(429, { error: "Too many requests. Please slow down." });
 
-	const body = await request.json() as { meetingId?: string };
+	const body = await request.json() as { meetingId?: string; sessionId?: string };
 	const meetingId = body.meetingId;
+	const sessionId = body.sessionId;
 
 	if (!meetingId) {
 		return jsonResponse(400, { error: "meetingId is required" });
 	}
 
 	// Get the latest summary from KV (the most recent version, not an old one)
-	const cached = await getCachedResult(env.MEETING_CACHE, meetingId);
+	const cached = await getCachedResult(env.MEETING_CACHE, meetingId, sessionId);
 	if (!cached || !cached.summary) {
 		return jsonResponse(200, { status: "error", message: "No summary available to send. Generate a summary first." });
 	}
@@ -84,6 +85,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 		meetingDate: meta.createdAt,
 		endedAt,
 		recordingUrl,
+		sessionId,
 	});
 
 	return jsonResponse(200, {

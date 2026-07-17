@@ -427,6 +427,7 @@ export async function maybeSendAutoEmail(env: AppEnv, meetingId: string, summary
 				appUrl,
 				alwaysEmail: env.ALWAYS_EMAIL,
 				meetingDate: meta.createdAt,
+				sessionId,
 			});
 			await markEmailSent(env.MEETING_CACHE, meetingId, sessionId);
 			console.log("[summary-core] Auto-email sent for", meetingId, sessionId ? `session ${sessionId}` : "", "to", recipients.length, "recipients");
