@@ -249,6 +249,37 @@ export async function getTranscriptionLockOwner(kv: KVNamespace, meetingId: stri
 	}
 }
 
+export async function acquireSummaryLock(kv: KVNamespace, meetingId: string, owner: string, sessionId?: string, ttlSeconds = 90): Promise<boolean> {
+	try {
+		const key = sessionId ? `meeting:${meetingId}:session:${sessionId}:summary-lock` : `meeting:${meetingId}:summary-lock`;
+		const existing = await kv.get(key);
+		if (existing) {
+			const parsed = JSON.parse(existing) as { owner: string; acquiredAt: string; expiresAt: number };
+			if (Date.now() < parsed.expiresAt && parsed.owner !== owner) {
+				return false;
+			}
+		}
+		const now = Date.now();
+		await kv.put(key, JSON.stringify({ owner, acquiredAt: new Date().toISOString(), expiresAt: now + ttlSeconds * 1000 }), { expirationTtl: ttlSeconds });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export async function releaseSummaryLock(kv: KVNamespace, meetingId: string, owner: string, sessionId?: string): Promise<void> {
+	try {
+		const key = sessionId ? `meeting:${meetingId}:session:${sessionId}:summary-lock` : `meeting:${meetingId}:summary-lock`;
+		const existing = await kv.get(key);
+		if (existing) {
+			const parsed = JSON.parse(existing) as { owner: string };
+			if (parsed.owner === owner) {
+				await kv.delete(key);
+			}
+		}
+	} catch { }
+}
+
 export async function markEmailSent(kv: KVNamespace, meetingId: string, sessionId?: string): Promise<void> {
 	try {
 		const key = sessionId ? `meeting:${meetingId}:session:${sessionId}:email-sent` : `meeting:${meetingId}:email-sent`;

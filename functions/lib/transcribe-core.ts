@@ -1,4 +1,4 @@
-import { getCachedResult, saveCachedResult, getMeetingMeta, getParticipants, getMeetingPrompt, getUserPrompt, addSummaryVersion, isEmailSent, markEmailSent, acquireTranscriptionLock, releaseTranscriptionLock, getTranscriptionLockOwner } from "./kv";
+import { getCachedResult, saveCachedResult, getMeetingMeta, getParticipants, getMeetingPrompt, getUserPrompt, addSummaryVersion, isEmailSent, markEmailSent, acquireTranscriptionLock, releaseTranscriptionLock, getTranscriptionLockOwner, acquireSummaryLock, releaseSummaryLock } from "./kv";
 import { generateSummary, summarizeChunk, combineChunkSummaries } from "./summarizer";
 import { sendSummaryEmails } from "./summary-email";
 import type { AppEnv } from "./env";
@@ -321,74 +321,106 @@ export async function generateMeetingSummary(
 		return { status: "ok", summary: cached.summary };
 	}
 
-	const context = await buildMeetingContext(env, meetingId);
-	const input = context + transcript;
-	const prompt = customPrompt || await resolvePrompt(env, meetingId);
-
-	if (input.length <= SUMMARY_DIRECT_MAX_CHARS) {
-		console.log("[summary-core] Short transcript:", input.length, "chars — single call");
-		const summary = await generateSummary(input, env, prompt);
-		if (summary) {
-			await persistSummary(env, meetingId, transcript, summary, prompt, sessionId);
-			return { status: "ok", summary };
+	// Acquire summary lock — prevents recording.statusUpdate + meeting.ended from
+	// both generating summaries concurrently for the same session
+	const lockOwner = `summary-${Date.now()}`;
+	const acquired = await acquireSummaryLock(env.MEETING_CACHE, meetingId, lockOwner, sessionId, 90);
+	if (!acquired) {
+		console.log("[summary-core] Summary lock held by another process for", meetingId, "— waiting");
+		// Wait briefly and re-check cache — the other process should finish soon
+		await new Promise((r) => setTimeout(r, 5000));
+		const retried = await getCachedResult(env.MEETING_CACHE, meetingId, sessionId);
+		if (retried?.summary) {
+			console.log("[summary-core] Summary appeared while waiting for lock — using it");
+			return { status: "ok", summary: retried.summary };
 		}
-		return { status: "no_summary", message: "Could not generate summary." };
+		// Lock expired or other process failed — try to acquire again
+		const reacquired = await acquireSummaryLock(env.MEETING_CACHE, meetingId, lockOwner, sessionId, 90);
+		if (!reacquired) {
+			console.log("[summary-core] Still locked after wait — giving up");
+			return { status: "no_summary", message: "Summary generation already in progress." };
+		}
 	}
 
-	// Map-reduce for long transcripts
-	const partialKey = sessionId ? `meeting:${meetingId}:session:${sessionId}:summary-partial` : `meeting:${meetingId}:summary-partial`;
-	let partial: { chunkIndex: number; chunkSummaries: string[]; totalChunks: number } | null = null;
 	try {
-		const raw = await env.MEETING_CACHE.get(partialKey);
-		if (raw) {
-			const parsed = JSON.parse(raw) as { chunkIndex: number; chunkSummaries: string[]; totalChunks: number };
-			partial = parsed;
-			console.log("[summary-core] Resuming from chunk", parsed.chunkIndex + 1, "/", parsed.totalChunks);
+		// Re-check cache after acquiring lock (another process may have just finished)
+		const postLockCached = await getCachedResult(env.MEETING_CACHE, meetingId, sessionId);
+		if (postLockCached?.summary) {
+			console.log("[summary-core] Summary appeared after lock acquisition — using it");
+			return { status: "ok", summary: postLockCached.summary };
 		}
-	} catch { }
 
-	const numChunks = Math.ceil(input.length / SUMMARY_CHUNK_CHAR_SIZE);
-	const chunkSummaries: string[] = [...(partial?.chunkSummaries || [])];
-	let startChunk = partial?.chunkIndex ?? 0;
-	const startTime = Date.now();
+		const context = await buildMeetingContext(env, meetingId);
+		const input = context + transcript;
+		const prompt = customPrompt || await resolvePrompt(env, meetingId);
 
-	console.log("[summary-core] Map-reduce:", input.length, "chars →", numChunks, "chunks");
-
-	for (let i = startChunk; i < numChunks; i++) {
-		if (Date.now() - startTime > TIME_BUDGET_MS) {
-			console.log("[summary-core] Time budget exceeded at chunk", i + 1, "/", numChunks);
-			await env.MEETING_CACHE.put(partialKey, JSON.stringify({ chunkIndex: i, chunkSummaries, totalChunks: numChunks }));
-			return { status: "no_summary", message: `Summarized ${i}/${numChunks} chunks. Will continue on next call.` };
-		}
-		const start = i * SUMMARY_CHUNK_CHAR_SIZE;
-		const chunkText = input.slice(start, Math.min(start + SUMMARY_CHUNK_CHAR_SIZE, input.length));
-		try {
-			const s = await summarizeChunk(chunkText, env);
-			if (s) {
-				chunkSummaries.push(s);
-				console.log(`[summary-core] Chunk ${i + 1} summary:`, s.length, "chars");
+		if (input.length <= SUMMARY_DIRECT_MAX_CHARS) {
+			console.log("[summary-core] Short transcript:", input.length, "chars — single call");
+			const summary = await generateSummary(input, env, prompt);
+			if (summary) {
+				await persistSummary(env, meetingId, transcript, summary, prompt, sessionId);
+				return { status: "ok", summary };
 			}
-		} catch (e) {
-			console.log(`[summary-core] Chunk ${i + 1} error:`, e instanceof Error ? e.message : String(e));
+			return { status: "no_summary", message: "Could not generate summary." };
 		}
+
+		// Map-reduce for long transcripts
+		const partialKey = sessionId ? `meeting:${meetingId}:session:${sessionId}:summary-partial` : `meeting:${meetingId}:summary-partial`;
+		let partial: { chunkIndex: number; chunkSummaries: string[]; totalChunks: number } | null = null;
+		try {
+			const raw = await env.MEETING_CACHE.get(partialKey);
+			if (raw) {
+				const parsed = JSON.parse(raw) as { chunkIndex: number; chunkSummaries: string[]; totalChunks: number };
+				partial = parsed;
+				console.log("[summary-core] Resuming from chunk", parsed.chunkIndex + 1, "/", parsed.totalChunks);
+			}
+		} catch { }
+
+		const numChunks = Math.ceil(input.length / SUMMARY_CHUNK_CHAR_SIZE);
+		const chunkSummaries: string[] = [...(partial?.chunkSummaries || [])];
+		let startChunk = partial?.chunkIndex ?? 0;
+		const startTime = Date.now();
+
+		console.log("[summary-core] Map-reduce:", input.length, "chars →", numChunks, "chunks");
+
+		for (let i = startChunk; i < numChunks; i++) {
+			if (Date.now() - startTime > TIME_BUDGET_MS) {
+				console.log("[summary-core] Time budget exceeded at chunk", i + 1, "/", numChunks);
+				await env.MEETING_CACHE.put(partialKey, JSON.stringify({ chunkIndex: i, chunkSummaries, totalChunks: numChunks }));
+				return { status: "no_summary", message: `Summarized ${i}/${numChunks} chunks. Will continue on next call.` };
+			}
+			const start = i * SUMMARY_CHUNK_CHAR_SIZE;
+			const chunkText = input.slice(start, Math.min(start + SUMMARY_CHUNK_CHAR_SIZE, input.length));
+			try {
+				const s = await summarizeChunk(chunkText, env);
+				if (s) {
+					chunkSummaries.push(s);
+					console.log(`[summary-core] Chunk ${i + 1} summary:`, s.length, "chars");
+				}
+			} catch (e) {
+				console.log(`[summary-core] Chunk ${i + 1} error:`, e instanceof Error ? e.message : String(e));
+			}
+		}
+
+		try { await env.MEETING_CACHE.delete(partialKey); } catch { }
+
+		if (chunkSummaries.length === 0) {
+			return { status: "no_summary", message: "All chunk summaries failed." };
+		}
+
+		const combined = chunkSummaries.map((s, i) => `### Part ${i + 1} of ${numChunks}\n\n${s}`).join("\n\n---\n\n");
+		const finalSummary = combined.length <= SUMMARY_DIRECT_MAX_CHARS
+			? await combineChunkSummaries(combined, env, prompt)
+			: await combineChunkSummaries(combined.slice(0, SUMMARY_DIRECT_MAX_CHARS) + "\n\n[...]", env, prompt);
+
+		if (finalSummary) {
+			await persistSummary(env, meetingId, transcript, finalSummary, prompt, sessionId);
+			return { status: "ok", summary: finalSummary };
+		}
+		return { status: "no_summary", message: "Could not combine chunk summaries." };
+	} finally {
+		await releaseSummaryLock(env.MEETING_CACHE, meetingId, lockOwner, sessionId);
 	}
-
-	try { await env.MEETING_CACHE.delete(partialKey); } catch { }
-
-	if (chunkSummaries.length === 0) {
-		return { status: "no_summary", message: "All chunk summaries failed." };
-	}
-
-	const combined = chunkSummaries.map((s, i) => `### Part ${i + 1} of ${numChunks}\n\n${s}`).join("\n\n---\n\n");
-	const finalSummary = combined.length <= SUMMARY_DIRECT_MAX_CHARS
-		? await combineChunkSummaries(combined, env, prompt)
-		: await combineChunkSummaries(combined.slice(0, SUMMARY_DIRECT_MAX_CHARS) + "\n\n[...]", env, prompt);
-
-	if (finalSummary) {
-		await persistSummary(env, meetingId, transcript, finalSummary, prompt, sessionId);
-		return { status: "ok", summary: finalSummary };
-	}
-	return { status: "no_summary", message: "Could not combine chunk summaries." };
 }
 
 async function persistSummary(env: AppEnv, meetingId: string, transcript: string, summary: string, prompt?: string, sessionId?: string): Promise<void> {

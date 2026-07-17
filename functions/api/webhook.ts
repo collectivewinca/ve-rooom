@@ -19,7 +19,7 @@ interface RTKWebhookEvent {
 		downloadUrl?: string;
 		audioDownloadUrl?: string;
 		meetingId?: string;
-		sessionId?: string;
+		roomUUID?: string;
 	};
 	transcriptDownloadUrl?: string;
 	summaryDownloadUrl?: string;
@@ -46,7 +46,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env, waitUnti
 	if (event.event === "recording.statusUpdate" && event.recording?.status === "UPLOADED") {
 		const meetingId = event.recording?.meetingId || event.meeting?.id;
 		const audioUrl = event.recording?.audioDownloadUrl || event.recording?.downloadUrl;
-		const sessionId = event.recording?.sessionId || event.meeting?.sessionId;
+		const sessionId = event.recording?.roomUUID || event.meeting?.sessionId;
 		if (meetingId && audioUrl) {
 			const origin = new URL(request.url).origin;
 			waitUntil(runTranscriptionPipeline(env, meetingId, audioUrl, origin, sessionId, "webhook", waitUntil));
