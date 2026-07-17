@@ -211,7 +211,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env, w
 			await addSummaryVersion(env.MEETING_CACHE, meetingId, newVersion, activeSessionId);
 			updatedHistory = [...history, newVersion];
 			if (env.SMTP_API_URL) {
-				waitUntil(sendAutoEmails(env, meetingId, summary, request.url, session, parsed));
+				waitUntil(sendAutoEmails(env, meetingId, summary, request.url, session, parsed, undefined, activeSessionId));
 			}
 		}
 
@@ -252,7 +252,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env, w
 			await addSummaryVersion(env.MEETING_CACHE, meetingId, newVersion, activeSessionId);
 			updatedHistory = [...history, newVersion];
 			if (env.SMTP_API_URL) {
-				waitUntil(sendAutoEmails(env, meetingId, summary, request.url, session, parsed, transcriptUrl));
+				waitUntil(sendAutoEmails(env, meetingId, summary, request.url, session, parsed, transcriptUrl, activeSessionId));
 			}
 		}
 		return jsonResponse(200, {
@@ -321,12 +321,13 @@ async function sendAutoEmails(
 	sessionInfo: { ended_at?: string },
 	recordingInfo: { recordingUrl?: string; audioRecordingUrl?: string },
 	transcriptUrl?: string,
+	sessionId?: string,
 ): Promise<void> {
 	try {
-		// Only auto-email on the first summary — re-generates use the Send Email button
-		const alreadySent = await isEmailSent(env.MEETING_CACHE, meetingId);
+		// Only auto-email on the first summary per session — re-generates use the Send Email button
+		const alreadySent = await isEmailSent(env.MEETING_CACHE, meetingId, sessionId);
 		if (alreadySent) {
-			console.log("[summary.ts] Email already sent for", meetingId, "— skipping auto-email");
+			console.log("[summary.ts] Email already sent for", meetingId, sessionId ? `session ${sessionId}` : "", "— skipping auto-email");
 			return;
 		}
 		const [meta, participants] = await Promise.all([
@@ -357,7 +358,7 @@ async function sendAutoEmails(
 				transcriptUrl: transcriptUrl || undefined,
 			});
 			if (result.sent > 0) {
-				await markEmailSent(env.MEETING_CACHE, meetingId);
+				await markEmailSent(env.MEETING_CACHE, meetingId, sessionId);
 			}
 		}
 	} catch (e) {

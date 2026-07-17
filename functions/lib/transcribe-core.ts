@@ -397,11 +397,11 @@ async function persistSummary(env: AppEnv, meetingId: string, transcript: string
 	console.log("[summary-core] Persisted summary for", meetingId, sessionId ? `session ${sessionId}` : "", "—", summary.length, "chars");
 }
 
-export async function maybeSendAutoEmail(env: AppEnv, meetingId: string, summary: string, appUrl: string): Promise<void> {
+export async function maybeSendAutoEmail(env: AppEnv, meetingId: string, summary: string, appUrl: string, sessionId?: string): Promise<void> {
 	try {
-		const alreadySent = await isEmailSent(env.MEETING_CACHE, meetingId);
+		const alreadySent = await isEmailSent(env.MEETING_CACHE, meetingId, sessionId);
 		if (alreadySent) {
-			console.log("[summary-core] Email already sent for", meetingId);
+			console.log("[summary-core] Email already sent for", meetingId, sessionId ? `session ${sessionId}` : "");
 			return;
 		}
 		if (!env.SMTP_API_URL) return;
@@ -428,8 +428,8 @@ export async function maybeSendAutoEmail(env: AppEnv, meetingId: string, summary
 				alwaysEmail: env.ALWAYS_EMAIL,
 				meetingDate: meta.createdAt,
 			});
-			await markEmailSent(env.MEETING_CACHE, meetingId);
-			console.log("[summary-core] Auto-email sent for", meetingId, "to", recipients.length, "recipients");
+			await markEmailSent(env.MEETING_CACHE, meetingId, sessionId);
+			console.log("[summary-core] Auto-email sent for", meetingId, sessionId ? `session ${sessionId}` : "", "to", recipients.length, "recipients");
 		}
 	} catch (e) {
 		console.log("[summary-core] Auto email error:", e);

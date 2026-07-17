@@ -249,17 +249,19 @@ export async function getTranscriptionLockOwner(kv: KVNamespace, meetingId: stri
 	}
 }
 
-export async function markEmailSent(kv: KVNamespace, meetingId: string): Promise<void> {
+export async function markEmailSent(kv: KVNamespace, meetingId: string, sessionId?: string): Promise<void> {
 	try {
-		await kv.put(`meeting:${meetingId}:email-sent`, new Date().toISOString());
+		const key = sessionId ? `meeting:${meetingId}:session:${sessionId}:email-sent` : `meeting:${meetingId}:email-sent`;
+		await kv.put(key, new Date().toISOString());
 	} catch (e) {
 		console.log("[kv] markEmailSent error:", e);
 	}
 }
 
-export async function isEmailSent(kv: KVNamespace, meetingId: string): Promise<boolean> {
+export async function isEmailSent(kv: KVNamespace, meetingId: string, sessionId?: string): Promise<boolean> {
 	try {
-		const raw = await kv.get(`meeting:${meetingId}:email-sent`);
+		const key = sessionId ? `meeting:${meetingId}:session:${sessionId}:email-sent` : `meeting:${meetingId}:email-sent`;
+		const raw = await kv.get(key);
 		return !!raw;
 	} catch {
 		return false;

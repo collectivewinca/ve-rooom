@@ -46,7 +46,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env, waitUnti
 		const summaryResult = await generateMeetingSummary(env, meetingId, transcript, customPrompt, sessionId);
 
 		if (summaryResult.status === "ok") {
-			await maybeSendAutoEmail(env, meetingId, summaryResult.summary, origin);
+			await maybeSendAutoEmail(env, meetingId, summaryResult.summary, origin, sessionId);
 			console.log("[transcribe-continue] Pipeline complete for", meetingId);
 			return jsonResponse(200, { ok: true, done: true });
 		}

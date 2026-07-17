@@ -180,7 +180,7 @@ async function finishSummary(env: Env, body: { transcript: string; meetingId?: s
 	if (body.meetingId) {
 		await addSummaryVersion(env.MEETING_CACHE, body.meetingId, { summary, prompt: customPrompt, createdAt: new Date().toISOString() }, sessionId);
 		// Only auto-email on the first summary — re-generates use the Send Email button
-		const alreadySent = await isEmailSent(env.MEETING_CACHE, body.meetingId);
+		const alreadySent = await isEmailSent(env.MEETING_CACHE, body.meetingId, sessionId);
 		if (env.SMTP_API_URL && !alreadySent) {
 			const meta = await getMeetingMeta(env.MEETING_CACHE, body.meetingId);
 			const participants = await getParticipants(env.MEETING_CACHE, body.meetingId);
@@ -203,7 +203,7 @@ async function finishSummary(env: Env, body: { transcript: string; meetingId?: s
 					appUrl: url.origin,
 					alwaysEmail: env.ALWAYS_EMAIL,
 					meetingDate: meta.createdAt,
-				}).then(() => markEmailSent(env.MEETING_CACHE, body.meetingId!)));
+				}).then(() => markEmailSent(env.MEETING_CACHE, body.meetingId!, sessionId)));
 			}
 		}
 	}
