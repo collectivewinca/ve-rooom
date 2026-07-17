@@ -189,6 +189,11 @@ Cloudflare Pages Functions (Workers)
     ├── POST /api/generate-summary — LLM summary from transcript
     ├── GET  /api/recording/[key] — Serve recording file from R2 (long-term storage, works after RTK 7-day expiry)
     ├── POST /api/recording/scan — List R2 objects for a meeting, cache refs in KV
+    ├── POST /api/webhook — RTK webhook handler (recording.statusUpdate, meeting.ended, meeting.transcript, meeting.summary)
+    ├── POST /api/transcribe-continue — Self-continuing transcription + summary + email (called by webhook's fireSelfContinue)
+    ├── POST /api/send-summary-email — Manual "Send Email" button (session-scoped)
+    ├── POST /api/prompt — Custom prompt CRUD (per-user)
+    ├── GET  /api/recent-data — Recent meetings with transcript/summary status (testing)
     ├── GET  /api/summary/:id — RTK transcript → LLM summary, or needs_transcription → frontend triggers /api/transcribe. Falls back to R2 URLs when RTK recording URLs are missing.
     └── GET  /api/meetings — list all meetings
     │
@@ -196,7 +201,8 @@ Cloudflare Pages Functions (Workers)
     │
 Cloudflare RealtimeKit (managed SFU)
     ├── WebRTC media routing
-    ├── Composite recording (MP4 + MP3) → R2 (via RTK auto-transfer) + RTK bucket (7-day expiry) — auto-starts on session start
+    ├── Composite recording (MP4 + MP3) → R2 (via RTK auto-transfer) + RTK bucket (7-day expiry) — auto-starts via record_on_start
+    ├── Webhooks → POST /api/webhook (recording.statusUpdate + meeting.ended → triggers auto-pipeline)
     ├── Track recording (WebM per participant) → REMOVED (RTK produced 0-byte files)
     ├── Transcription (transcribe_on_end) — returns 0-byte CSV (not working)
     └── Summary engine (summarize_on_end) — not producing summaries
@@ -205,6 +211,7 @@ External services:
     ├── OpenRouter (openrouter/free) — primary summary LLM
     ├── Ollama Cloud (gpt-oss:120b) — fallback summary LLM
     ├── Cloudflare Workers AI (whisper-large-v3-turbo) — transcription
+    ├── SMTP API (ve-call.exe.xyz/smtp-api) — summary email delivery
     └── PocketBase (formsdb.exe.xyz) — Google OAuth gateway
 ```
 
@@ -234,6 +241,14 @@ External services:
 | 18 | `stopAllRecordings` kept as fallback | RTK auto-stops on ALL_PEERS_LEFT, but client-side stop ensures clean shutdown |
 | 19 | RTK native transcription is non-functional | `transcription_minutes_consumed: 0` for ALL sessions. Whisper on composite MP3 is the actual transcription path |
 | 20 | Track recordings removed (Jul 13) | `file_size: 0` for all track recordings. Track endpoint, types, and transcription logic removed. Composite MP3 is the sole transcription source. Diarization on composite audio is a future feature. |
+| 21 | Webhook auto-pipeline (Jul 17) | `recording.statusUpdate` + `meeting.ended` webhooks trigger the full pipeline (transcribe → summarize → email) without user visiting Summary page. Replaces client-side polling as primary path. |
+| 22 | Self-continuing fetch for budget (Jul 17) | Webhook's `waitUntil()` runs out after Whisper transcription. Fires `fetch()` to `/api/transcribe-continue` as a separate `waitUntil()` so summary + email get a fresh 30s budget. |
+| 23 | Session-scoped KV keys (Jul 17) | All caches (transcript, summary, email-sent, locks) use `meeting:{id}:session:{sessionId}:...` so "Join Again" sessions are fully independent. |
+| 24 | Summary lock (Jul 17) | `acquireSummaryLock` prevents `recording.statusUpdate` + `meeting.ended` from generating duplicate summaries concurrently. Second caller waits 5s, re-checks cache. |
+| 25 | Stop endpoint: PUT + action: "stop" (Jul 17) | RTK expects `PUT /recordings/{id}` with `{ action: "stop" }`, NOT `PATCH` with `{ status: "STOP" }`. Old PATCH caused zombie INVOKED recordings. |
+| 26 | Webhook recording field: `roomUUID` (Jul 17) | RTK's `recording.statusUpdate` payload uses `recording.roomUUID` for session ID, not `recording.sessionId`. Per official webhook docs. |
+| 27 | `record_on_start` only for first session (Jul 17) | RTK docs: "recording starts when the first participant joins the meeting." Does NOT auto-start for subsequent "Join Again" sessions. `record_on_start: true` + properly working stop endpoint now handles this. |
+| 28 | ALWAYS_EMAIL default recipient (Jul 14) | `labh@collectivewin.ca` receives all meeting summaries even if not a participant. Configured via Cloudflare Pages env var. |
 
 ---
 
@@ -263,6 +278,15 @@ External services:
 | Vite dev can't reach Functions | Add `server.proxy["/api"]` → `localhost:8788` |
 | Recording starts during setup screen | Moved auto-start to after `initMeeting` resolves |
 | Summary page picks wrong recording session | Filter sessions by `associated_id` + latest `ENDED` |
+| Webhook `rtk-signature` check blocked all events (Jul 17) | RTK sends the header but no webhook secret configured. Removed 401 rejection, now logs warning and accepts. |
+| `waitUntil()` budget exhausted before summary (Jul 17) | Whisper transcription consumed entire 30s budget. Fixed by firing self-continue `fetch()` as separate `waitUntil()`. |
+| Email-sent guard was meeting-level (Jul 17) | Only first session ever got email. Fixed: session-scoped `isEmailSent`/`markEmailSent` with `sessionId` param. |
+| Email "View Summary" link missing sessionId (Jul 17) | Link opened wrong session for multi-session meetings. Fixed: `summaryUrl` includes `?sessionId=...` |
+| `findAudioAndProcess` grabbed wrong session's recording (Jul 17) | Fallback found any UPLOADED recording for the meeting, not the specific session. Fixed: only falls back when no sessionId. |
+| Stop endpoint used PATCH with `{status:"STOP"}` (Jul 17) | RTK expects PUT with `{action:"stop"}`. PATCH caused zombie INVOKED recordings that blocked everything. |
+| `recording.statusUpdate` payload uses `roomUUID` not `sessionId` (Jul 17) | RTK webhook docs confirm `recording.roomUUID` is the session ID field. Updated interface. |
+| Duplicate summaries from concurrent webhooks (Jul 17) | `recording.statusUpdate` + `meeting.ended` both triggered pipeline. Added `acquireSummaryLock` — second caller waits 5s and re-checks cache. |
+| `getLatestEndedSessionId` returned old session (Jul 17) | Preferred sessions with recordings, returning the old one. Fixed: return most recently ended session (sessions sorted DESC by created_at). |
 
 ---
 
@@ -302,24 +326,33 @@ functions/
 ├── env.d.ts                     # Env interface for Workers
 ├── auth.ts                      # verifyAuthToken via PocketBase
 ├── lib/
-│   ├── env.ts                   # AppEnv interface
-│   ├── kv.ts                    # MeetingMeta, ParticipantRecord, CachedResult helpers
+│   ├── env.ts                   # AppEnv interface (includes SMTP_API_URL, ALWAYS_EMAIL)
+│   ├── kv.ts                    # MeetingMeta, ParticipantRecord, CachedResult, transcription lock, summary lock, email-sent helpers (all session-scoped)
 │   ├── response.ts              # jsonResponse() helper
 │   ├── rate-limit.ts            # checkRateLimit() via KV (30 req/60s)
-│   ├── recordings.ts            # parseSessionRecordings() + TrackFile types
-│   └── summarizer.ts            # generateSummary() — OpenRouter → Ollama fallback
+│   ├── recordings.ts            # parseSessionRecordings() + R2 recording refs
+│   ├── summarizer.ts            # generateSummary(), summarizeChunk(), combineChunkSummaries() — OpenRouter → Ollama fallback
+│   ├── summary-email.ts         # sendSummaryEmails() — builds HTML email, sends via SMTP API, sessionId in summary link
+│   └── transcribe-core.ts       # transcribeCompositeAudio(), generateMeetingSummary(), maybeSendAutoEmail() — shared by webhook, transcribe-continue, and summary endpoints
 └── api/
-    ├── rooms.ts                 # POST → create meeting (record_on_start: true + recording_config)
-    ├── rooms/[id]/participants.ts # POST → join existing room
+    ├── rooms.ts                 # POST → create meeting (record_on_start: true + recording_config + ai_config)
+    ├── rooms/[id]/participants.ts # POST → join existing room (adds participant to KV)
     ├── recordings/
-    │   ├── start.ts             # POST → composite recording (kept for manual start if needed)
-    │   └── stop.ts              # POST → stop all recordings (fallback on roomLeft)
+    │   ├── start.ts             # POST → start composite recording (dedup check: skip on INVOKED/RECORDING)
+    │   └── stop.ts              # POST → stop recordings (PUT + action: "stop" — fixed Jul 17)
     ├── recording/
     │   ├── [key]/index.ts       # GET → serve recording file from R2 by object key
     │   └── scan.ts              # POST → list R2 objects for a meeting, cache refs in KV
-    ├── transcribe.ts            # POST → chunked Whisper (10MB chunks, 25s budget, KV partial resume, silent detection)
-    ├── generate-summary.ts      # POST → LLM summary from transcript text
-    ├── summary/[id].ts          # GET → RTK transcript → summary, or needs_transcription
+    ├── webhook.ts               # POST → RTK webhook handler (recording.statusUpdate, meeting.ended, meeting.transcript, meeting.summary)
+    ├── transcribe.ts            # POST → chunked Whisper (client-side trigger, uses transcribe-core)
+    ├── transcribe-continue.ts   # POST → self-continuing transcription + summary + email (called by webhook's fireSelfContinue)
+    ├── generate-summary.ts      # POST → LLM summary from transcript text (session-scoped email guard)
+    ├── send-summary-email.ts    # POST → manual "Send Email" button (session-scoped)
+    ├── summary/[id].ts          # GET → RTK transcript → summary, or needs_transcription → frontend triggers /api/transcribe
+    ├── prompt.ts                # GET/POST → custom prompt CRUD (per-user)
+    ├── prompt/[id].ts           # GET/PUT/DELETE → custom prompt for specific meeting
+    ├── recent-data.ts           # GET → recent meetings with transcript/summary status (for testing)
+    └── meetings.ts              # GET → list all meetings with sessions + recordings
     └── meetings.ts              # GET → list all meetings for dashboard
 ```
 
@@ -375,8 +408,32 @@ test_ollama.py / test_whisper.py  # Local test scripts
 | `OLLAMA_API_KEY` | No | Ollama Cloud API key — fallback LLM |
 | `OLLAMA_BASE_URL` | No | Ollama Cloud base URL (default: `https://ollama.com`) |
 | `OLLAMA_MODEL` | No | Ollama model (default: `gpt-oss:120b`) |
+| `SMTP_API_URL` | Yes | SMTP API URL for sending summary emails (e.g., `https://ve-call.exe.xyz/smtp-api`) — set in wrangler.toml `[vars]` |
+| `ALWAYS_EMAIL` | No | Default email recipient for all meeting summaries (e.g., `labh@collectivewin.ca`). Comma-separated for multiple. |
 
 > ⚠️ **Note:** Never commit credentials to git. Always check `.dev.vars` for current values.
+
+---
+
+## 7.5. KV Key Schema (Session-Scoped)
+
+All per-session keys follow the pattern `meeting:{meetingId}:session:{sessionId}:...`. The meeting-level keys (without `:session:...`) are legacy from before Jul 17.
+
+| Key Pattern | Purpose | TTL |
+|---|---|---|
+| `meeting:{id}:meta` | Meeting metadata (title, createdBy, createdAt) | Permanent |
+| `meeting:{id}:participants` | Array of participants [{email, name, joinedAt}] | Permanent |
+| `meeting:{id}:recordings` | R2 recording refs [{key, url, type, size, uploadedAt}] | Permanent |
+| `meeting:{id}:prompt` | Per-meeting custom prompt | Permanent |
+| `meeting:{id}:session:{sid}:result` | Cached transcript + summary + cachedAt | Permanent |
+| `meeting:{id}:session:{sid}:history` | Summary version history [{summary, prompt, createdAt}] | Permanent |
+| `meeting:{id}:session:{sid}:email-sent` | Timestamp when auto-email was sent | Permanent |
+| `meeting:{id}:session:{sid}:partial` | Transcription partial progress ({chunkIndex, transcriptParts, totalChunks, totalSize}) | Deleted on completion |
+| `meeting:{id}:session:{sid}:summary-partial` | Map-reduce summary partial progress | Deleted on completion |
+| `meeting:{id}:session:{sid}:transcribe-lock` | Transcription lock ({owner, acquiredAt, expiresAt}) | 120s TTL |
+| `meeting:{id}:session:{sid}:summary-lock` | Summary lock ({owner, acquiredAt, expiresAt}) | 90s TTL |
+| `user:{email}:meetings` | List of meeting IDs the user has joined | Permanent |
+| `user:{email}:prompt` | Per-user custom prompt | Permanent |
 
 ---
 
@@ -443,42 +500,30 @@ echo "value" | npx wrangler pages secret put VAR_NAME --project-name ve-rooom
    → Navigate to /meeting/{roomId} (token stored in sessionStorage)
 
 6. Meeting ends (all participants leave)
-   → RTK stops recording (ALL_PEERS_LEFT)
-   → roomLeft event fires → client calls POST /api/recordings/stop (fallback)
-   → "Summary" link appears in meeting overlay
+   → RTK stops recording (ALL_PEERS_LEFT) → recording transitions to UPLOADING → UPLOADED
+   → roomLeft event fires → client calls POST /api/recordings/stop (PUT + action: "stop")
+   → "Summary" link appears in meeting overlay (points to correct session via sessionId)
 
-7. User visits /summary/{roomId}
-   → GET /api/summary/{roomId}
-   → Worker: GET /sessions?meeting_id={roomId} → find latest ENDED session
-   → Worker: GET /sessions/{sessionId}/transcript → transcript_download_url
-   → Worker: fetch(transcript_download_url) → transcriptText (usually 0 bytes — RTK native transcription not working)
+7. AUTOMATIC PIPELINE (webhook — no user action needed):
+   → RTK fires recording.statusUpdate webhook (status: UPLOADED) with audio_download_url + roomUUID (session ID)
+   → Webhook handler: runTranscriptionPipeline(env, meetingId, audioUrl, origin, sessionId, "webhook")
+     → Step 1: transcribeCompositeAudio() — chunked Whisper, KV partial resume, transcription lock
+       → If time budget exceeded → fireSelfContinue() → fetch /api/transcribe-continue (fresh 30s budget)
+     → Step 2: fireSelfContinue() → /api/transcribe-continue → finds cached transcript → generateMeetingSummary()
+       → Summary lock acquired → LLM call (OpenRouter → Ollama) → persistSummary (save + history)
+       → If lock held by another process → wait 5s → re-check cache → use existing summary
+     → Step 3: maybeSendAutoEmail() → isEmailSent (session-scoped) → sendSummaryEmails via SMTP API → markEmailSent
+   → ALSO: RTK fires meeting.ended webhook → findAudioAndProcess()
+     → Finds UPLOADED recording (session-scoped lookup) → runTranscriptionPipeline
+     → Transcription lock prevents duplicate → summary lock prevents duplicate summary
+     → isEmailSent prevents duplicate email
+   → Email arrives automatically with sessionId in "View Full Summary" link
 
-   → IF transcriptText is empty:
-     → Returns { status: "needs_transcription", audioRecordingUrl, trackFiles }
-     → Frontend calls POST /api/transcribe { meetingId, audioUrl, trackFiles }
-
-   → transcribe.ts (Whisper fallback):
-     → IF cached transcript in KV → return it immediately
-     → IF track files exist → try Whisper on each (usually empty, skipped)
-     → IF composite audio URL → chunked Whisper:
-       → Probe audio size via Range header
-       → 10 MB chunks, 25s time budget per Worker invocation
-       → For each chunk: fetch Range → Workers AI whisper-large-v3-turbo
-       → Hallucination filter: word repetition ratio < 0.15, sentence ratio < 0.2
-       → IF time budget exceeded → save partial to KV, return { status: "processing" }
-       → Frontend auto-retries after 3s, Worker resumes from KV partial
-       → IF all chunks hallucinated → return { status: "silent" }
-       → IF transcript produced → save to KV, return { status: "transcribed" }
-
-   → IF transcribed:
-     → Frontend calls POST /api/generate-summary { transcript, meetingId }
-     → Worker: generateSummary() → OpenRouter (openrouter/free) → Ollama fallback
-     → Save transcript + summary to KV
-     → Return { status: "ok", summary }
-
-   → IF silent:
-     → Display "Silent Recording" message: "No speech detected. Microphone may have been muted."
-     → Show recording download links for manual verification
+8. FALLBACK: User visits /summary/{roomId}?sessionId={sessionId} (optional, for manual viewing)
+   → GET /api/summary/{roomId}?sessionId={sessionId}
+   → Worker checks session-scoped KV cache for transcript + summary
+   → IF cached → return immediately (webhook already processed)
+   → IF not cached → fetch RTK transcript (0 bytes) → needs_transcription → frontend triggers /api/transcribe
 
    → Renders Markdown summary + download cards:
      - Transcript CSV / TXT
@@ -573,7 +618,7 @@ RealtimeKit REST API does NOT support deleting meetings, recordings, or sessions
 - Video conferencing with 5+ participants
 - Composite recording (MP4 video + MP3 audio) — auto-starts via `record_on_start: true`
 - Track recording endpoint exists but produces empty files (RTK issue)
-- `stopAllRecordings` fallback on roomLeft
+- `stopAllRecordings` fallback on roomLeft (PUT + action: "stop")
 - Chunked Whisper transcription (10 MB chunks, 25s time budget, KV partial resume)
 - Hallucination filter (word + sentence repetition ratio)
 - Silent recording detection with clear user message
@@ -588,20 +633,31 @@ RealtimeKit REST API does NOT support deleting meetings, recordings, or sessions
 - Deployed to Cloudflare Pages (GitHub auto-deploy)
 - Full docs suite (7 doc files)
 - JSSA-amply 106-min meeting transcribed and summarized (manual pipeline)
+- **Webhook auto-pipeline (Jul 17)** — `recording.statusUpdate` + `meeting.ended` webhooks trigger Whisper transcription → LLM summary → auto-email without user visiting Summary page. See Session 8 below.
+- **Session-scoped everything (Jul 17)** — transcript, summary, email-sent, and summary lock are all keyed by `meeting:{id}:session:{sessionId}:...`. Each session (including "Join Again") gets its own independent pipeline.
+- **Summary lock (Jul 17)** — `acquireSummaryLock`/`releaseSummaryLock` in KV prevents `recording.statusUpdate` + `meeting.ended` from generating duplicate summaries concurrently.
+- **Transcription lock (Jul 14)** — `acquireTranscriptionLock`/`releaseTranscriptionLock` prevents webhook + frontend from transcribing the same audio concurrently.
+- **R2 long-term recording storage (Jul 13)** — recordings auto-transfer to `ve-room` R2 bucket, served via `/api/recording/[key]`.
+- **Self-continuing transcription (Jul 17)** — webhook fires `fetch()` to `/api/transcribe-continue` as a separate `waitUntil()` so each step (transcription, summary, email) gets a fresh 30s budget.
+- **SMTP email integration (Jul 14)** — `sendSummaryEmails` via SMTP API at `ve-call.exe.xyz/smtp-api`. Auto-email on first summary per session. Manual "Send Email" button on Summary page.
+- **Custom prompts (Jul 14)** — per-meeting and per-user custom summary prompts stored in KV.
+- **Summary history / versioning (Jul 14)** — `addSummaryVersion`/`getSummaryHistory` stores all summary regenerations per session.
 
 ### ❌ Not Done / Known Issues
 - [ ] RTK native transcription (`transcribe_on_end`) not working — returns 0-byte CSV for all sessions
 - [ ] Track recordings produce empty files (`file_size: 0`) — RTK issue, not our code
 - [x] **Track recording code removed (Jul 13)** — endpoint, types, transcription logic all deleted. Composite MP3 is sole transcription source.
 - [x] **R2 long-term recording storage (Jul 13)** — `ve-room` R2 bucket bound via wrangler.toml. RTK dashboard configured for auto-transfer. `/api/recording/[key]` serves from R2. `/api/recording/scan` lists R2 objects by meeting ID prefix and caches refs in KV. `summary/[id].ts` falls back to R2 URLs when RTK URLs expire (7 days). `Summary.tsx` auto-scans R2 when RTK recording URLs are missing.
-- [ ] End-to-end test with real multi-person conversation (current tests were solo or 2-person)
+- [x] **Webhook for summary-ready notifications (Jul 17)** — `recording.statusUpdate` + `meeting.ended` webhooks now drive the entire pipeline automatically. No polling needed.
+- [ ] R2 fallback in webhook `findAudioAndProcess` — if RTK API has no `UPLOADED` recording with `audio_download_url` (e.g., zombie INVOKED recordings), scan R2 for the file and use `/api/recording/[key]` as audio URL
+- [ ] Webhook signature verification — `rtk-signature` header is received but not verified (no public key fetch). RTK sends it; we log a warning and accept. Full RSA-SHA256 verification is a future security improvement.
+- [ ] End-to-end test with real multi-person conversation (current tests were solo or 2-3 person)
 - [ ] Ollama Cloud API key renewal (using OpenRouter as primary)
 - [ ] Custom domain (e.g., `ve-rooom.com`)
 - [ ] Live captions (real-time transcription)
 - [ ] Meeting deletion (not supported by RTK API — can only set INACTIVE)
 - [ ] Test framework setup
 - [ ] Mobile app (React Native / Flutter)
-- [ ] Webhook for summary-ready notifications (instead of polling)
 - [ ] Audio downsampling (243MB @ 320kbps → 32kbps mono to fit 25MB limit)
 - [ ] Participant name lookup for track files (currently shows userId)
 - [ ] exe.dev VM fallback for transcription (if CF daily limit hit)
@@ -622,21 +678,27 @@ RealtimeKit REST API does NOT support deleting meetings, recordings, or sessions
 
 ### Key non-obvious things
 1. **The Vite dev proxy** (`vite.config.ts`) proxies `/api` → `http://localhost:8788` so the frontend on port 5173 can reach Pages Functions on 8788. Run both `vite` and `wrangler pages dev` for local dev.
-2. **`record_on_start: true`** — RTK auto-records when session starts. This was changed to `false` in commit 00d5328 (Jul 7) which broke recordings. Reverted in commit 6d80cb1 (Jul 13). Do NOT change this back to `false`.
+2. **`record_on_start: true`** — RTK auto-records when the first participant joins. Does NOT auto-start for "Join Again" sessions (RTK limitation). Do NOT change this back to `false`.
 3. **`recording_config` must be on meeting creation** — `realtimekit_bucket_config` + `audio_config` (MP3 codec) set at meeting creation time. Removing this caused empty track files.
 4. **RTK native transcription is NOT working** — `transcription_minutes_consumed: 0` for ALL sessions. The `transcript_download_url` exists but returns 0-byte CSV. Whisper on composite MP3 is the actual transcription path.
 5. **Track recordings are empty** — `file_size: 0` for all track recordings on all meetings. This is an RTK issue, not our code. Composite MP3 is the primary audio source.
 6. **Whisper hallucinates on silence** — returns "Thank you. Thank you. Thank you." repetitively. The hallucination filter catches this via word repetition ratio (< 0.15 unique words) and sentence repetition ratio (< 0.2 unique sentences).
 7. **Workers AI 25 MB limit per request** — but we chunk at 10 MB for faster processing. A 1-hour meeting (~140 MB) takes ~14 chunks across ~7 Worker invocations with KV-based partial resume.
-8. **CF Pages Functions 30s wall-clock limit** — transcribe.ts uses a 25s time budget, saves partial progress to KV, and returns `processing` so the frontend can retry.
+8. **CF Pages Functions 30s wall-clock limit** — transcribe.ts uses a 25s time budget, saves partial progress to KV, and returns `processing` so the frontend can retry. The webhook pipeline uses self-continuing fetches so each step gets a fresh 30s budget.
 9. **`type` field is always empty** in CF's list recordings response. Detect track recordings by `.webm` extension in `output_file_name` or `Array.isArray(download_url)`.
 10. **Track response shape differs from composite** — `data.id` (not `data.recording.id`).
 11. **CF API token needs `Workers AI:Run` scope** — without it, Whisper returns 401.
 12. **Google profile image** may break — use `onError` fallback to initials avatar.
 13. **Room ID trailing slash** causes 405 — trim in `joinRoom`.
 14. **SVG attributes in React** must be camelCase: `strokeWidth` not `stroke-width`.
-15. **KV partial progress key** — `meeting:{id}:partial` stores `{ chunkIndex, transcriptParts, totalChunks, totalSize }`. Deleted on completion.
+15. **KV partial progress key** — `meeting:{id}:session:{sessionId}:partial` stores `{ chunkIndex, transcriptParts, totalChunks, totalSize }`. Deleted on completion.
 16. **Silent recording detection** — if all Whisper chunks produce hallucinations, the audio is silent. Returns `silent` status with a clear message about muted microphone.
+17. **Stop endpoint must use PUT + `{action: "stop"}`** (Jul 17 fix) — NOT PATCH + `{status: "STOP"}`. PATCH caused zombie INVOKED recordings that blocked everything.
+18. **RTK webhook `recording.statusUpdate` uses `recording.roomUUID` for session ID** — not `recording.sessionId`. Per official webhook docs.
+19. **`rtk-signature` header IS sent by RTK** but we don't verify it (no public key fetch). We log a warning and accept. Full RSA-SHA256 verification is a future improvement.
+20. **Summary lock prevents duplicate summaries** — `recording.statusUpdate` and `meeting.ended` both fire for the same session. Without the lock, both generate different summaries and send duplicate emails.
+21. **All KV caches are session-scoped** — `meeting:{id}:session:{sessionId}:result`, `:email-sent`, `:history`, `:partial`, `:transcribe-lock`, `:summary-lock`. The meeting-level `:email-sent` key is legacy (pre-Jul 17).
+22. **`waitUntil` can be called multiple times** — the webhook fires the main pipeline in one `waitUntil` and the self-continue fetch in a separate `waitUntil`. Each gets its own execution budget.
 
 ### The JSSA-amply test artifacts
 The root directory has Python scripts and audio segments from testing the transcription pipeline on a 106-minute recording. These are test artifacts, not production code:
@@ -672,6 +734,43 @@ These can be cleaned up if the repo is getting cluttered, but they serve as refe
 17. `c75ee8d` — Persist raw transcript to KV immediately after Whisper, pass meetingId to generate-summary
 18. `aa344f1` — Refactor: auth token security, rate limiting, DRY utils, CSS split, dashboard search, skeletons
 19. `6d80cb1` — Fix: revert to record_on_start, fix hallucination filter, silent recording detection, chunked transcription with time budget
+
+### Session 8: Webhook Auto-Pipeline + Session Scoping (Jul 14-17, commits 539a211 → 84f052e)
+
+20. `539a211` (Jul 14) — feat: add summary .txt download, remove CSV transcript fallback, reposition Copy Join Link button
+21. `7197c9e` (Jul 14) — fix: prevent webhook+frontend race condition and enable long meeting transcription
+22. `1b15fef` (Jul 14) — fix: View Summary links to session with recordings, not just latest ended
+23. `41f6eff` (Jul 14) — fix: post-meeting Summary link includes session ID
+24. `b61f030` (Jul 14) — fix: session-scoped cache for webhook, transcription, and summary pipelines
+25. `3cfb540` (Jul 14) — feat: Join Again button + session-specific summaries
+26. `7cb8dc7` (Jul 14) — fix: add padding below download cards before version nav
+27. `96e3d29` (Jul 14) — fix: add host as participant in KV so they receive summary emails
+28. `deeffa6` (Jul 14) — fix: summary page polls API when client-side summary fails, picks up webhook summary
+29. `8052fdb` (Jul 14) — feat: webhook auto-transcription pipeline — recording.statusUpdate + meeting.ended trigger Whisper+summary+email without user visiting summary page
+30. `abcd751` (Jul 14) — fix: remove CSV transcript download (txt only), add blinking animation to Generating... loader
+31. `e5ef80e` (Jul 14) — feat: enrich email with meeting details, Send Email button, meeting context in all prompts, auto-email only on first summary
+32. `c2a89d9` (Jul 14) — feat: add ALWAYS_EMAIL default recipient (labh@collectivewin.ca) for all meeting summaries
+33. `862f64e` (Jul 14) — feat: map-reduce summarization for long transcripts — chunk, summarize, combine with KV partial resume
+34. `8b398e2` (Jul 14) — fix: partial transcript was being cached as complete — check partial key first
+35. `b11c48c` (Jul 14) — fix: clear loader on too_large status, raise max audio size to 1GB for long meetings
+36. `14ede1e` (Jul 14) — feat: add stopping indicator after meeting ends, summary email webhooks, custom prompts, and summary history
+37. `7d68712` (Jul 13) — fix: add remark-gfm for proper markdown rendering in summary page
+38. `e84575c` (Jul 13) — fix: remove recording indicator, auto-poll no_ended_session, remove track from dashboard
+39. `ac20017` (Jul 13) — feat: remove track recording, add R2 long-term recording storage
+40. `6e4e4fd` (Jul 13) — docs: update project memory with session 7
+41. `6d80cb1` (Jul 13) — fix: revert to record_on_start, fix hallucination filter, silent recording detection, chunked transcription
+
+### Session 9: Webhook Pipeline Bug Fixes (Jul 17, commits 9180aa7 → 84f052e)
+
+42. `9180aa7` (Jul 17) — fix: remove rtk-signature requirement that blocked all webhook events
+43. `a959574` (Jul 17) — fix: decouple summary generation from webhook waitUntil budget (self-continue fetch)
+44. `47eea6a` (Jul 17) — fix: session-scoped email guard so each session sends its own email
+45. `8035983` (Jul 17) — fix: include sessionId in email summary link (?sessionId=...)
+46. `4528504` (Jul 17) — fix: session-scoped recording lookup + independent waitUntil for self-continue
+47. `e1fae16` (Jul 17) — fix: start recording on roomJoined + return latest session ID (later reverted in 3826d96)
+48. `3826d96` (Jul 17) — fix: stop endpoint using wrong HTTP method (PATCH→PUT) + revert roomJoined recording start
+49. `33c5192` (Jul 17) — fix: don't skip recording start on stale INVOKED status
+50. `84f052e` (Jul 17) — fix: summary lock prevents duplicate summaries + fix webhook recording roomUUID field
 
 ---
 
