@@ -74,6 +74,8 @@ export default function Summary() {
 	const totalVersions = history.length;
 	const currentVersion = versionIndex >= 0 && versionIndex < totalVersions ? versionIndex : totalVersions - 1;
 	const displayedSummary = currentVersion >= 0 ? history[currentVersion]?.summary : data?.summary;
+	// The latest summary is always the newest version in history, or data.summary if no history.
+	const latestSummary = totalVersions > 0 ? history[totalVersions - 1]?.summary : data?.summary;
 
 	const hasTranscript = !!data?.transcript_text && data.transcript_text.trim().length > 0;
 
@@ -354,7 +356,7 @@ export default function Summary() {
 		}
 	}
 
-	const hasDownloads = data?.transcript_text || displayedSummary || data?.recordingUrl || data?.audioRecordingUrl;
+	const hasDownloads = data?.transcript_text || displayedSummary || latestSummary || data?.recordingUrl || data?.audioRecordingUrl;
 	const showSummary = !!displayedSummary && ((data?.status === "ok") || (data?.status === "silent"));
 	const showLoadingState = data && (data.status === "processing" || data.status === "needs_transcription") && !showSummary;
 	const showNoSummary = data?.status === "no_summary" || (data?.status === "ok" && (!data.summary || data.summary.trim().length < 50) && totalVersions === 0);
@@ -510,20 +512,20 @@ export default function Summary() {
 				<div className="download-section">
 					<h3>Downloads</h3>
 					<div className="download-grid">
-					{displayedSummary && displayedSummary.trim().length > 0 && (
-						<a href={`data:text/plain;charset=utf-8,${encodeURIComponent(displayedSummary)}`} download="summary.txt" className="download-card">
-							<div className="download-card-icon" style={{ background: "rgba(251, 191, 36, 0.15)" }}>
-								<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-									<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-									<polyline points="14 2 14 8 20 8"/>
-								</svg>
-							</div>
-							<div className="download-card-info">
-								<div className="download-card-title">Summary</div>
-								<div className="download-card-subtitle">Text file</div>
-							</div>
-						</a>
-					)}
+				{latestSummary && latestSummary.trim().length > 0 && (
+					<a href={`data:text/plain;charset=utf-8,${encodeURIComponent(latestSummary)}`} download="summary.txt" className="download-card">
+						<div className="download-card-icon" style={{ background: "rgba(251, 191, 36, 0.15)" }}>
+							<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+								<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+								<polyline points="14 2 14 8 20 8"/>
+							</svg>
+						</div>
+						<div className="download-card-info">
+							<div className="download-card-title">Summary</div>
+							<div className="download-card-subtitle">Text file</div>
+						</div>
+					</a>
+				)}
 					{data?.transcript_text && data.transcript_text.trim().length > 0 && (
 						<a href={`data:text/plain;charset=utf-8,${encodeURIComponent(data.transcript_text)}`} download="transcript.txt" className="download-card">
 							<div className="download-card-icon" style={{ background: "rgba(34, 197, 94, 0.15)" }}>

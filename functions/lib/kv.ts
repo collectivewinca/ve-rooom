@@ -280,6 +280,19 @@ export async function releaseSummaryLock(kv: KVNamespace, meetingId: string, own
 	} catch { }
 }
 
+export async function getSummaryLockOwner(kv: KVNamespace, meetingId: string, sessionId?: string): Promise<string | null> {
+	try {
+		const key = sessionId ? `meeting:${meetingId}:session:${sessionId}:summary-lock` : `meeting:${meetingId}:summary-lock`;
+		const raw = await kv.get(key);
+		if (!raw) return null;
+		const parsed = JSON.parse(raw) as { owner: string; expiresAt: number };
+		if (Date.now() >= parsed.expiresAt) return null;
+		return parsed.owner;
+	} catch {
+		return null;
+	}
+}
+
 export async function markEmailSent(kv: KVNamespace, meetingId: string, sessionId?: string): Promise<void> {
 	try {
 		const key = sessionId ? `meeting:${meetingId}:session:${sessionId}:email-sent` : `meeting:${meetingId}:email-sent`;

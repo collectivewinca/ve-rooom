@@ -1,4 +1,4 @@
-import { getCachedResult, getMeetingMeta, getParticipants, saveCachedResult, getRecordingRefs, getMeetingPrompt, getUserPrompt, addSummaryVersion, getSummaryHistory, isEmailSent, markEmailSent, getTranscriptionLockOwner, type SummaryVersion } from "../../lib/kv";
+import { getCachedResult, getMeetingMeta, getParticipants, saveCachedResult, getRecordingRefs, getMeetingPrompt, getUserPrompt, addSummaryVersion, getSummaryHistory, isEmailSent, markEmailSent, getTranscriptionLockOwner, getSummaryLockOwner, type SummaryVersion } from "../../lib/kv";
 import { jsonResponse } from "../../lib/response";
 import { checkRateLimit } from "../../lib/rate-limit";
 import { parseSessionRecordings } from "../../lib/recordings";
@@ -75,9 +75,16 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env, w
 	let session: { id: string; associated_id: string; status: string; ended_at?: string; recording_status?: string; total_participants?: number; recording_minutes_consumed?: number; transcription_minutes_consumed?: number } | undefined;
 	if (requestedSessionId) {
 		session = meetingSessions.find((s) => s.id === requestedSessionId && s.status === "ENDED");
-		console.log("[summary.ts] Requested sessionId:", requestedSessionId, "found:", !!session);
+		console.log("[summary.ts] Requested sessionId:", requestedSessionId, "found in RTK:", !!session);
+		// Trust the explicitly requested sessionId even if RTK hasn't listed it yet.
+		// The KV cache is keyed by sessionId, so we can serve the correct session's
+		// summary without falling back to the latest ended session (which would be wrong).
+		if (!session) {
+			session = { id: requestedSessionId, associated_id: meetingId, status: "ENDED" };
+			console.log("[summary.ts] SessionId not in RTK response — proceeding with requested sessionId anyway");
+		}
 	}
-	if (!session) {
+	if (!session && !requestedSessionId) {
 		const endedSessions = meetingSessions.filter((s) => s.status === "ENDED");
 		endedSessions.sort((a, b) => (b.ended_at || "").localeCompare(a.ended_at || ""));
 		// Prefer the latest ended session that has a recording; fall back to latest ended
@@ -162,10 +169,12 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env, w
 
 	// Cache hit: transcript only (no summary yet) — generate summary server-side
 	if (cached && cached.transcript && !cached.summary) {
-		// Check if webhook is actively processing this meeting
+		// Check if webhook is actively processing this meeting (transcription OR summary lock)
 		const lockOwner = await getTranscriptionLockOwner(env.MEETING_CACHE, meetingId, activeSessionId);
-		if (lockOwner && lockOwner.startsWith("webhook")) {
-			console.log("[summary.ts] Webhook is processing — deferring summary to webhook, returning processing");
+		const summaryLockOwner = await getSummaryLockOwner(env.MEETING_CACHE, meetingId, activeSessionId);
+		const webhookBusy = (lockOwner && lockOwner.startsWith("webhook")) || (summaryLockOwner && summaryLockOwner.startsWith("summary-"));
+		if (webhookBusy) {
+			console.log("[summary.ts] Webhook is processing (transcribeLock=", !!lockOwner, "summaryLock=", !!summaryLockOwner, ") — deferring to webhook, returning processing");
 			const recRes = await fetchRecordings();
 			const parsed = await parseSessionRecordings(recRes, meetingId, activeSessionId);
 			return jsonResponse(200, {
@@ -276,10 +285,12 @@ export const onRequestGet: PagesFunction<Env> = async ({ params, request, env, w
 	}
 
 	// RTK transcript empty — return needs_transcription so frontend triggers /api/transcribe
-	// But if the webhook is already transcribing, return processing instead
+	// But if the webhook is already transcribing OR summarizing, return processing instead
 	const lockOwner2 = await getTranscriptionLockOwner(env.MEETING_CACHE, meetingId, activeSessionId);
-	if (lockOwner2 && lockOwner2.startsWith("webhook")) {
-		console.log("[summary.ts] Webhook is transcribing — returning processing instead of needs_transcription");
+	const summaryLockOwner2 = await getSummaryLockOwner(env.MEETING_CACHE, meetingId, activeSessionId);
+	const webhookBusy2 = (lockOwner2 && lockOwner2.startsWith("webhook")) || (summaryLockOwner2 && summaryLockOwner2.startsWith("summary-"));
+	if (webhookBusy2) {
+		console.log("[summary.ts] Webhook is transcribing/summarizing — returning processing instead of needs_transcription");
 		return jsonResponse(200, {
 			status: "processing",
 			transcriptUrl,

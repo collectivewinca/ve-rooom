@@ -41,12 +41,30 @@ export function isHallucination(text: string): boolean {
 		return true;
 	}
 	const sentences = text.split(/[.!?]+/).filter((s) => s.trim().length > 0);
-	if (sentences.length > 3) {
+	if (sentences.length >= 2) {
 		const uniqueSentences = new Set(sentences.map((s) => s.trim().toLowerCase()));
 		const sRatio = uniqueSentences.size / sentences.length;
-		if (sRatio < 0.2) {
+		if (sRatio < 0.5) {
 			console.log(`[transcribe-core] Hallucination: sentence repetition ${sRatio.toFixed(2)} (${uniqueSentences.size}/${sentences.length})`);
 			return true;
+		}
+	}
+	// Catch phrases like "Thank you. Thank you. Thank you." where individual
+	// sentences repeat (even short ones). The per-sentence check above already
+	// handles this, but also guard against long repeated phrases without
+	// terminal punctuation (e.g. "you. Thank you. Thank" runs together).
+	const normalized = text.toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+	if (normalized.length > 0) {
+		const tokens = normalized.split(" ").filter(Boolean);
+		if (tokens.length >= 4) {
+			const bigrams: string[] = [];
+			for (let i = 0; i < tokens.length - 1; i++) bigrams.push(`${tokens[i]} ${tokens[i + 1]}`);
+			const uniqueBigrams = new Set(bigrams);
+			const bRatio = uniqueBigrams.size / bigrams.length;
+			if (bRatio < 0.4) {
+				console.log(`[transcribe-core] Hallucination: bigram repetition ${bRatio.toFixed(2)} (${uniqueBigrams.size}/${bigrams.length})`);
+				return true;
+			}
 		}
 	}
 	return false;
