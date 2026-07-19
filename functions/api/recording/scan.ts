@@ -27,27 +27,32 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 
 	const refs: RecordingRef[] = [];
 
-	const prefixes = [
-		`${meetingId}/`,
-		`recordings/${meetingId}/`,
-		`${env.RTK_APP_ID}/${meetingId}/`,
-	];
+	// R2 recordings arrive in two naming schemes depending on RTK config:
+	//   - Nested:  <meetingId>/<sessionId>/composite.mp3   (older)
+	//   - Flat:    <meetingId>_<timestamp>.mp3 / .mp4        (newer, Jul 17+)
+	// Both share the meeting ID as a literal string prefix, so a single
+	// list call with prefix=meetingId covers both. We then filter out any
+	// keys from unrelated meetings that share a UUID prefix.
+	const listed = await env.RECORDINGS_BUCKET.list({ prefix: meetingId, limit: 500 });
+	console.log("[scan-r2] Listing R2 with prefix:", meetingId, "— found", listed.objects.length, "objects");
 
-	for (const prefix of prefixes) {
-		console.log("[scan-r2] Listing R2 with prefix:", prefix);
-		const listed = await env.RECORDINGS_BUCKET.list({ prefix, limit: 100 });
-		for (const obj of listed.objects) {
-			const ext = obj.key.split(".").pop()?.toLowerCase() || "";
-			const type: "composite" | "audio" = ext === "mp3" || ext === "mp4" ? (ext === "mp3" ? "audio" : "composite") : "composite";
-			refs.push({
-				key: obj.key,
-				url: `/api/recording/${encodeURIComponent(obj.key)}`,
-				type,
-				size: obj.size,
-				uploadedAt: obj.uploaded?.toISOString(),
-			});
-		}
-		if (refs.length > 0) break;
+	for (const obj of listed.objects) {
+		// Require the char after the meetingId to be "/" (nested) or "_" (flat).
+		// This prevents matching a longer UUID that happens to start with meetingId.
+		const afterId = obj.key.slice(meetingId.length);
+		if (afterId !== "" && afterId[0] !== "/" && afterId[0] !== "_") continue;
+
+		const ext = obj.key.split(".").pop()?.toLowerCase() || "";
+		// Composite video = mp4; audio-only = mp3. Skip anything else.
+		if (ext !== "mp3" && ext !== "mp4") continue;
+		const type: "composite" | "audio" = ext === "mp3" ? "audio" : "composite";
+		refs.push({
+			key: obj.key,
+			url: `/api/recording/${encodeURIComponent(obj.key)}`,
+			type,
+			size: obj.size,
+			uploadedAt: obj.uploaded?.toISOString(),
+		});
 	}
 
 	const deduped = refs.filter((r, i, arr) => arr.findIndex((x) => x.key === r.key) === i);
