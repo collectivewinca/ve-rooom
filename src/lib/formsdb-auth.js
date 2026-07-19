@@ -90,27 +90,48 @@ class FormsDBAuth {
       const popup = window.open(fullUrl, "google-auth", "width=500,height=650");
       if (!popup) return reject(new Error("Popup blocked"));
 
+      let settled = false;
+      const cleanup = () => {
+        if (settled) return;
+        settled = true;
+        window.removeEventListener("message", handler);
+        if (this._popupPoll) { clearInterval(this._popupPoll); this._popupPoll = null; }
+        if (this._oauthTimeout) { clearTimeout(this._oauthTimeout); this._oauthTimeout = null; }
+      };
+
       const handler = (ev) => {
+        // PocketBase's oauth-callback page announces it's ready, then waits
+        // for the opener to send its origin so it can target the pb-oauth-code
+        // message. Respond immediately so PB can post the code back to us.
+        if (ev.data?.type === "pb-oauth-ready") {
+          try {
+            ev.source.postMessage({ type: "pb-oauth-origin", origin: window.location.origin }, "*");
+          } catch {}
+          return;
+        }
         if (ev.data?.type === "pb-oauth-code") {
-          window.removeEventListener("message", handler);
-          clearInterval(this._popupPoll);
+          cleanup();
           this._exchange(provider, ev.data.code, ev.data.state)
             .then(resolve).catch(reject);
         } else if (ev.data?.type === "pb-oauth-error") {
-          window.removeEventListener("message", handler);
-          clearInterval(this._popupPoll);
+          cleanup();
           reject(new Error(ev.data.error || "OAuth error"));
         }
       };
       window.addEventListener("message", handler);
 
-      this._popupPoll = setInterval(() => {
-        if (popup.closed) {
-          clearInterval(this._popupPoll);
-          window.removeEventListener("message", handler);
-          reject(new Error("Popup closed before completing login"));
+      // NOTE: Do NOT poll popup.closed — Cross-Origin-Opener-Policy blocks
+      // access to popup.closed when the popup navigates across origins
+      // (Google → formsdb callback), which would falsely report "closed"
+      // and pre-empt the postMessage handshake. Rely on the message event
+      // plus a generous timeout instead.
+      this._oauthTimeout = setTimeout(() => {
+        if (!settled) {
+          cleanup();
+          try { popup.close(); } catch {}
+          reject(new Error("Google sign-in timed out. Please try again."));
         }
-      }, 500);
+      }, 180000); // 3 minutes
     });
   }
 
