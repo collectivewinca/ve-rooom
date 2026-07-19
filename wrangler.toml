@@ -12,4 +12,3 @@ bucket_name = "ve-room"
 
 [vars]
 SMTP_API_URL = "https://ve-call.exe.xyz/smtp-api"
-R2_BUCKET = "ve-room"

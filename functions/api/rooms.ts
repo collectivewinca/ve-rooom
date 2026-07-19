@@ -61,21 +61,9 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 		},
 	};
 
-	// Attach R2 storage config only if R2 credentials are configured via env.
-	// account_id reuses CF_ACCOUNT_ID; bucket reuses R2_BUCKET or the R2 binding name.
-	if (env.R2_ACCESS_KEY && env.R2_SECRET_KEY) {
-		const storageConfig: Record<string, unknown> = {
-			type: "cloudflare",
-			access_key: env.R2_ACCESS_KEY,
-			secret: env.R2_SECRET_KEY,
-			bucket: env.R2_BUCKET || "ve-room",
-			path: "/",
-			account_id: env.CF_ACCOUNT_ID,
-		};
-		(meetingBody.recording_config as Record<string, unknown>).storage_config = storageConfig;
-	} else {
-		console.log("[rooms.ts] R2_ACCESS_KEY/R2_SECRET_KEY not set — meeting created without storage_config");
-	}
+	// R2 long-term storage is handled by the RTK dashboard's auto-transfer
+	// configuration (not via the API's storage_config, which only accepts
+	// aws/azure/digitalocean/gcs/sftp — Cloudflare R2 is configured out of band).
 
 	console.log("[rooms.ts] Creating meeting with title:", meetingBody.title);
 
